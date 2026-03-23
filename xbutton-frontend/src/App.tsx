@@ -158,6 +158,9 @@ function getEthereum(): EthereumProvider | undefined {
 const TEZOS_X_EVM_WALLET_HINT =
   "We couldn't detect your wallet is on Tezos X EVM. Make sure you're connecting with a wallet on the Tezos X EVM.";
 
+/** Tezos X testnet dashboard (RPC, chain ID, Tezlink, explorers). */
+const TEZOS_X_TESTNET_DASHBOARD_URL = "https://demo.txpark.nomadic-labs.com/";
+
 function isUserRejectedWalletError(error: unknown): boolean {
   const e = error as { code?: number | string };
   return e.code === 4001 || e.code === "ACTION_REJECTED";
@@ -1012,7 +1015,24 @@ function App() {
           {!hasInjectedWallet ? (
             <p className="inline-note error">No Ethereum wallet extension was detected in this browser.</p>
           ) : null}
-          {walletError ? <p className="inline-note error">{walletError}</p> : null}
+          {walletError ? (
+            walletError === TEZOS_X_EVM_WALLET_HINT ? (
+              <p className="inline-note error">
+                {TEZOS_X_EVM_WALLET_HINT}{" "}
+                <a
+                  href={TEZOS_X_TESTNET_DASHBOARD_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="explorer-link"
+                >
+                  See network information on the Tezos X testnet dashboard
+                </a>
+                .
+              </p>
+            ) : (
+              <p className="inline-note error">{walletError}</p>
+            )
+          ) : null}
         </section>
 
         <section className="panel">
