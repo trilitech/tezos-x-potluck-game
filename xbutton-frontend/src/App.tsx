@@ -901,7 +901,7 @@ function App() {
             <div className="wallet-actions">
               {!walletState.address ? (
                 <button onClick={connectWallet} disabled={isConnecting || !hasMetaMask}>
-                  {isConnecting ? "Connecting..." : "Connect MetaMask"}
+                  {isConnecting ? "Connecting..." : "Connect wallet"}
                 </button>
               ) : !onExpectedNetwork ? (
                 <>
