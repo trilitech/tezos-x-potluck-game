@@ -932,7 +932,7 @@ function App() {
               </strong>
             </div>
             <div className="stat">
-              <span>USDC Balance</span>
+              <span>YOUR USDC BALANCE</span>
               <strong>
                 {walletState.usdcBalance ? `${walletState.usdcBalance} USDC` : "Unavailable"}
               </strong>
@@ -966,7 +966,7 @@ function App() {
 
           <div className="grid two">
             <div className="stat">
-              <span>Pot</span>
+              <span>POT BALANCE</span>
               <strong>{gameState ? `${gameState.potDisplay} USDC` : "Loading..."}</strong>
             </div>
             <div className="stat">
