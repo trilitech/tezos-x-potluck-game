@@ -155,6 +155,25 @@ function getEthereum(): EthereumProvider | undefined {
   return window.ethereum as EthereumProvider | undefined;
 }
 
+const TEZOS_X_EVM_WALLET_HINT =
+  "We couldn't detect your wallet is on Tezos X EVM. Make sure you're connecting with a wallet on the Tezos X EVM.";
+
+function isUserRejectedWalletError(error: unknown): boolean {
+  const e = error as { code?: number | string };
+  return e.code === 4001 || e.code === "ACTION_REJECTED";
+}
+
+/** Ethers BAD_DATA / empty `0x` when reading a contract — usually wrong chain or token not deployed there. */
+function isBadContractRpcResultError(error: unknown): boolean {
+  const err = error as { code?: string; message?: string; shortMessage?: string };
+  const text = `${err?.code ?? ""} ${err?.message ?? ""} ${err?.shortMessage ?? ""}`.toLowerCase();
+  return (
+    err?.code === "BAD_DATA" ||
+    text.includes("bad_data") ||
+    text.includes("could not decode result data")
+  );
+}
+
 function shortenAddress(value: string | null, size = 6) {
   if (!value) return "Not connected";
   return `${value.slice(0, size)}...${value.slice(-4)}`;
@@ -446,34 +465,75 @@ function App() {
     const ethereum = getEthereum();
     if (!ethereum) {
       setWalletState({ address: null, chainId: null, usdcBalance: null, usdcAllowance: null });
+      setWalletError(null);
       return;
     }
 
-    const provider = new ethers.BrowserProvider(ethereum);
-    const accounts = (await provider.send(
-      requestAccounts ? "eth_requestAccounts" : "eth_accounts",
-      [],
-    )) as string[];
+    try {
+      const provider = new ethers.BrowserProvider(ethereum);
+      const accounts = (await provider.send(
+        requestAccounts ? "eth_requestAccounts" : "eth_accounts",
+        [],
+      )) as string[];
 
-    if (accounts.length === 0) {
+      if (accounts.length === 0) {
+        setWalletState({ address: null, chainId: null, usdcBalance: null, usdcAllowance: null });
+        setWalletError(null);
+        return;
+      }
+
+      const address = ethers.getAddress(accounts[0]);
+      const network = await provider.getNetwork();
+
+      if (network.chainId !== CONFIG.chainId) {
+        setWalletState({
+          address,
+          chainId: network.chainId,
+          usdcBalance: null,
+          usdcAllowance: null,
+        });
+        setWalletError(TEZOS_X_EVM_WALLET_HINT);
+        return;
+      }
+
+      const usdc = new ethers.Contract(CONFIG.usdcAddress, ERC20_ABI, provider);
+      try {
+        const [balance, allowance] = await Promise.all([
+          usdc.balanceOf(address) as Promise<bigint>,
+          usdc.allowance(address, CONFIG.potAddress) as Promise<bigint>,
+        ]);
+        setWalletState({
+          address,
+          chainId: network.chainId,
+          usdcBalance: formatTokenAmount(balance, CONFIG.usdcDecimals),
+          usdcAllowance: allowance,
+        });
+        setWalletError(null);
+      } catch (contractErr) {
+        if (isBadContractRpcResultError(contractErr)) {
+          setWalletError(TEZOS_X_EVM_WALLET_HINT);
+        } else {
+          setWalletError(
+            contractErr instanceof Error ? contractErr.message : "Failed to load USDC balance.",
+          );
+        }
+        setWalletState({
+          address,
+          chainId: network.chainId,
+          usdcBalance: null,
+          usdcAllowance: null,
+        });
+      }
+    } catch (error) {
+      if (isUserRejectedWalletError(error)) {
+        setWalletError(null);
+      } else if (isBadContractRpcResultError(error)) {
+        setWalletError(TEZOS_X_EVM_WALLET_HINT);
+      } else {
+        setWalletError(error instanceof Error ? error.message : "Failed to connect wallet.");
+      }
       setWalletState({ address: null, chainId: null, usdcBalance: null, usdcAllowance: null });
-      return;
     }
-
-    const address = ethers.getAddress(accounts[0]);
-    const network = await provider.getNetwork();
-    const usdc = new ethers.Contract(CONFIG.usdcAddress, ERC20_ABI, provider);
-    const [balance, allowance] = await Promise.all([
-      usdc.balanceOf(address) as Promise<bigint>,
-      usdc.allowance(address, CONFIG.potAddress) as Promise<bigint>,
-    ]);
-
-    setWalletState({
-      address,
-      chainId: network.chainId,
-      usdcBalance: formatTokenAmount(balance, CONFIG.usdcDecimals),
-      usdcAllowance: allowance,
-    });
   }, [isWalletDisconnected]);
 
   const refreshGameState = useCallback(async () => {
@@ -549,11 +609,8 @@ function App() {
     setWalletError(null);
     setIsConnecting(true);
     setIsWalletDisconnected(false);
-
     try {
       await refreshWalletState(true);
-    } catch (error) {
-      setWalletError(error instanceof Error ? error.message : "Failed to connect wallet.");
     } finally {
       setIsConnecting(false);
     }
