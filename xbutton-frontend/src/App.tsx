@@ -63,7 +63,7 @@ function isEvmAddress(value: string) {
 }
 
 function isTezosAddress(value: string) {
-  return /^KT1[a-zA-Z0-9]{33}$/.test(value);
+  return /^(tz1|tz2|tz3|KT1)[1-9A-HJ-NP-Za-km-z]{33}$/.test(value);
 }
 
 const ERC20_ABI = [
@@ -75,6 +75,7 @@ const ERC20_ABI = [
 
 const ESCROW_ABI = [
   "function deposit(uint256 amount)",
+  "event Deposited(address indexed player, uint256 amount)",
   "event PaidOut(address indexed winner, uint256 amount)",
 ];
 
@@ -115,10 +116,13 @@ type TezlinkNode = {
   args?: TezlinkNode[];
   bytes?: string;
   int?: string;
+  string?: string;
 };
 
 type GameState = {
-  lastPlayerBytes: string;
+  /** Tezlink identity for the last depositor — matched against Tezos.get_sender on claim. */
+  lastPlayerTezos: string | null;
+  /** Raw 20-byte EVM address of the last depositor, stored directly in contract storage. */
   lastPlayerAddress: string | null;
   potRaw: string;
   potDisplay: string;
@@ -188,54 +192,163 @@ function formatTokenAmount(value: bigint, decimals: number) {
   return formatted.replace(/\.?0+$/, "");
 }
 
-function formatMaybeEvmAddress(bytesValue: string) {
-  if (bytesValue.length === 40) {
-    return ethers.getAddress(`0x${bytesValue}`);
+// ---------------------------------------------------------------------------
+// Tezos address helpers (browser-side, async Web Crypto SHA-256)
+// ---------------------------------------------------------------------------
+
+const TEZOS_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+const TEZOS_ADDR_PREFIXES: Record<string, number[]> = {
+  tz1: [6, 161, 159],
+  tz2: [6, 161, 161],
+  tz3: [6, 161, 164],
+  KT1: [2, 90, 121],
+};
+
+function base58Encode(bytes: Uint8Array): string {
+  let n = 0n;
+  for (const b of bytes) n = n * 256n + BigInt(b);
+  let result = "";
+  while (n > 0n) {
+    result = TEZOS_BASE58_ALPHABET[Number(n % 58n)] + result;
+    n /= 58n;
   }
-  return null;
+  for (const b of bytes) {
+    if (b !== 0) break;
+    result = "1" + result;
+  }
+  return result;
 }
 
-function parseGameStorage(storage: TezlinkNode): GameState {
-  // storage: (pair last_player (pair pot (pair session_end (pair claim_requested payout_completed))))
-  const levelOne = storage.args;           // [last_player, pair(pot,...)]
-  const levelTwo = levelOne?.[1]?.args;    // [pot, pair(session_end,...)]
-  const levelThree = levelTwo?.[1]?.args;  // [session_end, pair(claim_requested, payout_completed)]
-  const levelFour = levelThree?.[1]?.args; // [claim_requested, payout_completed]
+async function sha256Bytes(data: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", data.buffer as ArrayBuffer));
+}
 
-  const lastPlayerBytes = levelOne?.[0]?.bytes;
-  const potRaw = levelTwo?.[0]?.int;
-  const sessionEndRaw = levelThree?.[0]?.int;
-  const claimedPrim = levelFour?.[0]?.prim;
-  const payoutCompletedPrim = levelFour?.[1]?.prim;
+/**
+ * Convert a 22-byte optimised Tezos address (as returned by Tezlink JSON storage)
+ * back to a human-readable tz1/tz2/tz3/KT1 Base58Check string.
+ */
+async function tezosAddressFromBinary(hexStr: string): Promise<string> {
+  const bin = new Uint8Array(hexStr.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
+  if (bin.length !== 22) throw new Error(`Expected 22-byte address, got ${bin.length}`);
 
-  if (!lastPlayerBytes || !potRaw || !sessionEndRaw || claimedPrim === undefined) {
+  let prefixBytes: number[];
+  let hash: Uint8Array;
+
+  if (bin[0] === 0x00) {
+    const curve = bin[1];
+    hash = bin.slice(2);
+    if (curve === 0x00) prefixBytes = TEZOS_ADDR_PREFIXES.tz1;
+    else if (curve === 0x01) prefixBytes = TEZOS_ADDR_PREFIXES.tz2;
+    else if (curve === 0x02) prefixBytes = TEZOS_ADDR_PREFIXES.tz3;
+    else throw new Error(`Unknown implicit curve byte: 0x${curve.toString(16)}`);
+  } else if (bin[0] === 0x01) {
+    prefixBytes = TEZOS_ADDR_PREFIXES.KT1;
+    hash = bin.slice(1, 21);
+  } else {
+    throw new Error(`Unknown address type byte: 0x${bin[0].toString(16)}`);
+  }
+
+  const payload = new Uint8Array([...prefixBytes, ...hash]);
+  const checksum = (await sha256Bytes(await sha256Bytes(payload))).slice(0, 4);
+  return base58Encode(new Uint8Array([...payload, ...checksum]));
+}
+
+function parseGameStorage(storage: TezlinkNode): {
+  state: Omit<GameState, "lastPlayerTezos" | "lastPlayerAddress">;
+  lastPlayerBytes: string | null;
+  lastPlayerTezos: string | null;
+  lastPlayerEvmHex: string | null;
+} {
+  // New storage layout:
+  // pair (option %last_player address)
+  //      (pair (option %last_player_evm bytes)
+  //            (pair (nat %pot)
+  //                  (pair (timestamp %session_end)
+  //                        (pair (bool %claim_requested) (bool %payout_completed)))))
+  const levelOne   = storage.args;              // [last_player, pair(last_player_evm,...)]
+  const levelTwo   = levelOne?.[1]?.args;       // [last_player_evm, pair(pot,...)]
+  const levelThree = levelTwo?.[1]?.args;       // [pot, pair(session_end,...)]
+  const levelFour  = levelThree?.[1]?.args;     // [session_end, pair(claim_requested, payout_completed)]
+  const levelFive  = levelFour?.[1]?.args;      // [claim_requested, payout_completed]
+
+  // last_player (Tezos identity)
+  const lastPlayerCell = levelOne?.[0];
+  let lastPlayerTezos: string | null = null;
+  let lastPlayerBytes: string | null = null;
+
+  if (!lastPlayerCell?.prim) {
+    throw new Error("Unexpected Tezlink storage shape for last_player.");
+  }
+  if (lastPlayerCell.prim === "Some") {
+    const arg = lastPlayerCell.args?.[0];
+    if (arg?.string) lastPlayerTezos = arg.string;
+    else if (arg?.bytes) lastPlayerBytes = arg.bytes;
+    else throw new Error("Unexpected Tezlink storage: Some last_player without address or bytes.");
+  } else if (lastPlayerCell.prim !== "None") {
+    throw new Error("Unexpected Tezlink storage shape for last_player.");
+  }
+
+  // last_player_evm (raw 20-byte EVM address stored by the relayer)
+  const lastPlayerEvmCell = levelTwo?.[0];
+  let lastPlayerEvmHex: string | null = null;
+  if (lastPlayerEvmCell?.prim === "Some") {
+    const evmBytes = lastPlayerEvmCell.args?.[0]?.bytes;
+    if (evmBytes) lastPlayerEvmHex = evmBytes; // 40-char hex, no 0x prefix
+  }
+
+  const potRaw = levelThree?.[0]?.int;
+  const sessionEndRaw = levelFour?.[0]?.int;
+  const claimedPrim = levelFive?.[0]?.prim;
+  const payoutCompletedPrim = levelFive?.[1]?.prim;
+
+  if (potRaw === undefined || !sessionEndRaw || claimedPrim === undefined) {
     throw new Error("Unexpected Tezlink storage shape.");
   }
 
   return {
+    state: {
+      potRaw: potRaw ?? "0",
+      potDisplay: formatTokenAmount(BigInt(potRaw ?? "0"), CONFIG.usdcDecimals),
+      sessionEnd: Number(sessionEndRaw),
+      claimed: claimedPrim === "True",
+      payoutCompleted: payoutCompletedPrim === "True",
+      fetchedAt: Date.now(),
+    },
+    lastPlayerTezos,
     lastPlayerBytes,
-    lastPlayerAddress: formatMaybeEvmAddress(lastPlayerBytes),
-    potRaw,
-    potDisplay: formatTokenAmount(BigInt(potRaw), CONFIG.usdcDecimals),
-    sessionEnd: Number(sessionEndRaw),
-    claimed: claimedPrim === "True",
-    payoutCompleted: payoutCompletedPrim === "True",
-    fetchedAt: Date.now(),
+    lastPlayerEvmHex,
   };
 }
 
-async function fetchGameState() {
+
+
+/** Fetch Tezlink storage. */
+async function fetchGameState(): Promise<GameState> {
   const response = await fetch(CONFIG.tezlinkStorageUrl);
-  if (!response.ok) {
-    throw new Error(`Tezlink RPC returned ${response.status}.`);
-  }
+  if (!response.ok) throw new Error(`Tezlink RPC returned ${response.status}.`);
 
   const json = (await response.json()) as TezlinkNode;
-  return parseGameStorage(json);
+  const { state, lastPlayerTezos: tezosStr, lastPlayerBytes, lastPlayerEvmHex } = parseGameStorage(json);
+
+  let lastPlayerTezos = tezosStr;
+  if (!lastPlayerTezos && lastPlayerBytes) {
+    try { lastPlayerTezos = await tezosAddressFromBinary(lastPlayerBytes); }
+    catch (e) { console.warn("Could not decode last_player bytes:", e); }
+  }
+
+  // EVM address comes directly from storage — no log scan or RPC needed.
+  let lastPlayerAddress: string | null = null;
+  if (lastPlayerEvmHex) {
+    try { lastPlayerAddress = ethers.getAddress("0x" + lastPlayerEvmHex); }
+    catch { /* non-fatal */ }
+  }
+
+  return { ...state, lastPlayerTezos, lastPlayerAddress };
 }
 
 async function fetchPayoutTxHash(
-  winnerAddress: string,
+  winnerAddress: string | null,
 ): Promise<string | null> {
   const ethereum = getEthereum();
   if (!ethereum) return null;
@@ -244,13 +357,13 @@ async function fetchPayoutTxHash(
     const escrow = new ethers.Contract(CONFIG.potAddress, ESCROW_ABI, provider);
     const latestBlock = await provider.getBlockNumber();
     const fromBlock = Math.max(0, latestBlock - 999);
-    // Try with winner filter first.
-    const filterByWinner = escrow.filters.PaidOut(winnerAddress);
-    const winnerLogs = await escrow.queryFilter(filterByWinner, fromBlock, "latest");
-    if (winnerLogs.length > 0) {
-      return winnerLogs[winnerLogs.length - 1].transactionHash ?? null;
+    if (winnerAddress) {
+      const filterByWinner = escrow.filters.PaidOut(winnerAddress);
+      const winnerLogs = await escrow.queryFilter(filterByWinner, fromBlock, "latest");
+      if (winnerLogs.length > 0) {
+        return winnerLogs[winnerLogs.length - 1].transactionHash ?? null;
+      }
     }
-    // Fallback: most recent PaidOut event to any address in the window.
     const allLogs = await escrow.queryFilter(escrow.filters.PaidOut(), fromBlock, "latest");
     if (allLogs.length > 0) {
       return allLogs[allLogs.length - 1].transactionHash ?? null;
@@ -387,18 +500,16 @@ function App() {
         ? { kind: "success", message: "Payout complete. The winner has been paid." }
         : prev
     );
-    if (gameState.lastPlayerAddress) {
-      void fetchPayoutTxHash(gameState.lastPlayerAddress).then((txHash) => {
-        if (txHash) {
-          setPayoutTxHash(txHash);
-          setActionState((prev) =>
-            prev.message.toLowerCase().includes("payout complete")
-              ? { kind: "success", message: "Payout complete. The winner has been paid.", txHash }
-              : prev
-          );
-        }
-      });
-    }
+    void fetchPayoutTxHash(gameState.lastPlayerAddress ?? null).then((txHash) => {
+      if (txHash) {
+        setPayoutTxHash(txHash);
+        setActionState((prev) =>
+          prev.message.toLowerCase().includes("payout complete")
+            ? { kind: "success", message: "Payout complete. The winner has been paid.", txHash }
+            : prev
+        );
+      }
+    });
   }, [gameState?.payoutCompleted, gameState?.lastPlayerAddress, gameState?.potRaw]);
 
   useEffect(() => {
@@ -505,24 +616,19 @@ function App() {
     await refreshWalletState(false);
   }
 
-  async function waitForGameStateUpdate(previousState: GameState, expectedPlayer: string) {
-    const expectedPlayerLower = expectedPlayer.toLowerCase();
-
-    for (let attempt = 0; attempt < 24; attempt += 1) {
+  async function waitForGameStateUpdate(previousState: GameState) {
+    // Poll for up to ~4 minutes (48 × 5 s). CRAC relay can take 1–2 minutes on busy chains.
+    for (let attempt = 0; attempt < 48; attempt += 1) {
       await sleep(CONFIG.pollIntervalMs);
       const nextState = await fetchGameState();
       setGameState(nextState);
       setGameStateError(null);
 
-      const potIncreased = BigInt(nextState.potRaw) > BigInt(previousState.potRaw);
-      const playerUpdated = nextState.lastPlayerAddress?.toLowerCase() === expectedPlayerLower;
-
-      if (potIncreased || playerUpdated) {
+      if (BigInt(nextState.potRaw) > BigInt(previousState.potRaw)) {
         return nextState;
       }
     }
-
-    throw new Error("Deposit confirmed, but the Michelson state did not update in time.");
+    throw new Error("Deposit confirmed on-chain, but the Tezlink state is taking longer than expected. The relay may still be processing — check back shortly.");
   }
 
   async function pressButton() {
@@ -594,7 +700,7 @@ function App() {
         txHash: tx.hash,
       });
 
-      await waitForGameStateUpdate(currentState, walletState.address);
+      await waitForGameStateUpdate(currentState);
       await refreshWalletState(false);
 
       setActionState({
@@ -645,16 +751,17 @@ function App() {
         return;
       }
 
-      if (
-        currentState?.lastPlayerAddress &&
-        walletState.address.toLowerCase() !== currentState.lastPlayerAddress.toLowerCase()
-      ) {
-        setActionState({
-          kind: "error",
-          message: `This wallet is not the last player. Only the last player can claim. Funds will be sent to the last player's address: ${currentState.lastPlayerAddress}.`,
-        });
-        setIsClaiming(false);
-        return;
+      // Pre-flight: compare EVM addresses directly — no RPC call needed now that
+      // last_player_evm is stored in the contract.
+      if (currentState?.lastPlayerAddress && walletState.address) {
+        if (walletState.address.toLowerCase() !== currentState.lastPlayerAddress.toLowerCase()) {
+          setActionState({
+            kind: "error",
+            message: `Only the last depositor can claim. Last player: ${currentState.lastPlayerAddress}. Your wallet: ${walletState.address}.`,
+          });
+          setIsClaiming(false);
+          return;
+        }
       }
 
       setActionState({
@@ -688,6 +795,7 @@ function App() {
         txHash: tx.hash,
       });
     } catch (error) {
+      console.error("[claim] error:", error);
       const err = error as { code?: string; message?: string; shortMessage?: string };
       const isRevert =
         err?.code === "CALL_EXCEPTION" ||
@@ -697,10 +805,9 @@ function App() {
       if (isRevert) {
         const fresh = await refreshGameState();
         if (fresh?.claimed) {
-          const winnerAddress = fresh.lastPlayerAddress ?? walletState.address ?? "";
-          const payoutHash = winnerAddress
-            ? await fetchPayoutTxHash(winnerAddress)
-            : null;
+          const payoutHash = await fetchPayoutTxHash(
+            fresh.lastPlayerAddress ?? walletState.address ?? null,
+          );
           setActionState({
             kind: "success",
             message:
@@ -709,14 +816,18 @@ function App() {
             txHash: payoutHash ?? undefined,
           });
         } else {
+          const hint =
+            err?.message?.includes("NOT_LAST_PLAYER") || err?.shortMessage?.includes("NOT_LAST_PLAYER")
+              ? " On-chain: NOT_LAST_PLAYER — connect the wallet that last deposited."
+              : "";
           setActionState({
             kind: "error",
             message:
-              "The claim failed. This session may already have been claimed, or the session might still be active. Refresh the page to see the current status.",
+              `The claim failed.${hint} This session may already have been claimed, or the session might still be active. Refresh the page to see the current status.`,
           });
         }
       } else {
-        const message = error instanceof Error ? error.message : "Claim failed.";
+        const message = err?.shortMessage ?? err?.message ?? "Claim failed.";
         setActionState({ kind: "error", message });
       }
     } finally {
@@ -861,10 +972,14 @@ function App() {
             <div className="stat">
               <span>Current Last Player</span>
               <strong>
-                {gameState?.lastPlayerAddress ? (
+                {!gameState ? (
+                  "Loading..."
+                ) : gameState.lastPlayerAddress ? (
                   <ExplorableAddress address={gameState.lastPlayerAddress} />
+                ) : gameState.lastPlayerTezos ? (
+                  "Resolving…"
                 ) : (
-                  gameState?.lastPlayerBytes ?? "Loading..."
+                  "—"
                 )}
               </strong>
             </div>
@@ -917,7 +1032,7 @@ function App() {
           <p className="action-copy">
             {canStartNewSession
               ? "Starts a fresh session on the game contract (resets pot and claim state). Use when the previous session ended — even if winnings were not claimed yet or payout is still pending."
-              : "Press once to deposit 1 USDC to the escrow. If needed, approve and deposit happen in sequence. The relayer detects the deposit and calls `record_deposit` through the CRAC gateway."}
+              : "Press once to deposit 1 USDC to the escrow. If needed, approve and deposit happen in sequence. The relayer detects the deposit, maps your EVM address with tez_getEthereumTezosAddress, and calls `record_deposit` through the CRAC gateway."}
           </p>
 
           <button className="primary-button" onClick={pressButton} disabled={!canPressButton}>
@@ -952,8 +1067,8 @@ function App() {
           gameState.lastPlayerAddress &&
           walletState.address.toLowerCase() !== gameState.lastPlayerAddress.toLowerCase() ? (
             <p className="inline-note error">
-              This wallet is not the last player. The funds have been sent to the last player’s
-              wallet address: <ExplorableAddress address={gameState.lastPlayerAddress} />.
+              This wallet is not the last player. The funds have been sent to the winner’s EVM
+              address: <ExplorableAddress address={gameState.lastPlayerAddress} />.
             </p>
           ) : gameState?.claimed ? (
             <p className="inline-note">

@@ -1,73 +1,89 @@
 { parameter
     (or (unit %mark_paid)
-        (or (unit %claim) (or (pair %record_deposit bytes nat) (int %start_session)))) ;
+        (or (unit %claim)
+            (or (pair %record_deposit address (pair bytes nat)) (int %start_session)))) ;
   storage
-    (pair (bytes %last_player)
-          (pair (nat %pot)
-                (pair (timestamp %session_end)
-                      (pair (bool %claim_requested) (bool %payout_completed))))) ;
+    (pair (option %last_player address)
+          (pair (option %last_player_evm bytes)
+                (pair (nat %pot)
+                      (pair (timestamp %session_end)
+                            (pair (bool %claim_requested) (bool %payout_completed)))))) ;
   code { UNPAIR ;
          IF_LEFT
            { DROP ;
              DUP ;
-             GET 7 ;
+             GET 9 ;
              IF { DUP ;
-                  GET 8 ;
+                  GET 10 ;
                   IF { PUSH string "ALREADY_PAID" ; FAILWITH }
-                     { PUSH bool True ; UPDATE 8 ; NIL operation ; PAIR } }
+                     { PUSH bool True ; UPDATE 10 ; NIL operation ; PAIR } }
                 { PUSH string "NO_CLAIM_REQUESTED" ; FAILWITH } }
            { IF_LEFT
                { DROP ;
                  DUP ;
-                 GET 5 ;
+                 GET 7 ;
                  NOW ;
                  COMPARE ;
                  LT ;
                  IF { PUSH string "SESSION_ACTIVE" ; FAILWITH }
                     { DUP ;
-                      GET 7 ;
+                      GET 9 ;
                       IF { PUSH string "CLAIM_ALREADY_REQUESTED" ; FAILWITH }
                          { PUSH nat 0 ;
                            DUP 2 ;
-                           GET 3 ;
+                           GET 5 ;
                            COMPARE ;
                            EQ ;
                            IF { PUSH string "EMPTY_POT" ; FAILWITH }
-                              { PUSH bool True ; UPDATE 7 ; NIL operation ; PAIR } } } }
+                              { DUP ;
+                                CAR ;
+                                IF_NONE
+                                  { PUSH string "NO_LAST_PLAYER" ; FAILWITH }
+                                  { SENDER ;
+                                    COMPARE ;
+                                    NEQ ;
+                                    IF { PUSH string "NOT_LAST_PLAYER" ; FAILWITH }
+                                       { PUSH bool True ; UPDATE 9 ; NIL operation ; PAIR } } } } } }
                { IF_LEFT
-                   { UNPAIR ;
-                     DUP 3 ;
-                     GET 5 ;
+                   { UNPAIR 3 ;
+                     DUP 4 ;
+                     GET 7 ;
                      NOW ;
                      COMPARE ;
                      GT ;
                      IF { PUSH string "SESSION_ENDED" ; FAILWITH }
-                        { DUP 3 ;
-                          GET 7 ;
+                        { DUP 4 ;
+                          GET 9 ;
                           IF { PUSH string "CLAIM_ALREADY_REQUESTED" ; FAILWITH }
-                             { DUP 3 ;
+                             { DUP 4 ;
                                SWAP ;
+                               SOME ;
                                UPDATE 1 ;
                                SWAP ;
-                               DIG 2 ;
-                               GET 3 ;
-                               ADD ;
+                               SOME ;
                                UPDATE 3 ;
+                               SWAP ;
+                               DIG 2 ;
+                               GET 5 ;
+                               ADD ;
+                               UPDATE 5 ;
                                NIL operation ;
                                PAIR } } }
                    { SWAP ;
-                     PUSH bytes 0x0000000000000000000000000000000000000000 ;
+                     NONE address ;
                      UPDATE 1 ;
-                     PUSH nat 0 ;
+                     NONE bytes ;
                      UPDATE 3 ;
+                     PUSH nat 0 ;
+                     UPDATE 5 ;
                      SWAP ;
                      NOW ;
                      ADD ;
-                     UPDATE 5 ;
-                     PUSH bool False ;
                      UPDATE 7 ;
                      PUSH bool False ;
-                     UPDATE 8 ;
+                     UPDATE 9 ;
+                     PUSH bool False ;
+                     UPDATE 10 ;
                      NIL operation ;
                      PAIR } } } } }
 

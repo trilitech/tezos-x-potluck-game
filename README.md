@@ -17,8 +17,8 @@ Demo pieces for the Tezos X / CRAC XButton flow: EVM deposits, relayer → Tezli
 1. Connect a wallet in the frontend on the TezosX EVM network.
 2. Approve/deposit **1 USDC** to the configured escrow (pot) address.
 3. The relayer sees the deposit and forwards it through the CRAC precompile.
-4. The Michelson contract updates **pot** / **last player** (when the on-chain session is active).
-5. The frontend polls Tezlink and shows live state.
+4. The Michelson contract updates **pot**, **last player** (Tezlink identity), and **last player EVM bytes** (when the on-chain session is active).
+5. The frontend polls Tezlink and shows live state (EVM last player is read from contract storage).
 
 ## Example network values
 
@@ -31,7 +31,7 @@ Point `.env` at your deployment; defaults in the repo target the public demo RPC
 
 ## Tezos ↔ EVM address helpers
 
-The EVM RPC exposes **`tez_getEthereumTezosAddress`** and **`tez_getTezosEthereumAddress`** (chain docs). The game’s `mark_paid` entrypoint is permissionless (claim-state only); CRAC does not map callers to a fixed Tezos `SENDER` for admin-style checks.
+The EVM RPC exposes **`tez_getEthereumTezosAddress`** and **`tez_getTezosEthereumAddress`** (chain docs). The relayer uses **`tez_getEthereumTezosAddress`** when building **`record_deposit`** so Tezlink **`last_player`** matches **`Tezos.get_sender ()`** on **`claim`** (`NOT_LAST_PLAYER` otherwise). The contract also stores the depositor’s **raw EVM address** in **`last_player_evm`**, so the relayer can **`payout`** and the frontend can show the winner without reversing `KT1` → `0x`. **`mark_paid`** remains permissionless aside from existing storage guards.
 
 ## Run locally
 
