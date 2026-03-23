@@ -8,7 +8,7 @@ Demo pieces for the Tezos X / CRAC XButton flow: EVM deposits, relayer → Tezli
 
 | Area | Role |
 |------|------|
-| **Frontend** | React + Vite: MetaMask, Tezlink polling, USDC to escrow, CRAC calls. |
+| **Frontend** | React + Vite: browser wallet, Tezlink polling, USDC to escrow, CRAC calls. |
 | **Relayer** | Node: watches escrow `Deposited` events, Micheline payload, CRAC `callMichelson` → `record_deposit`. |
 | **Contracts** | EVM (`xUSDC`, `xEscrow`) under `contracts/evm`; Tezlink game (LIGO / Michelson) under `contracts/tezlink`. |
 

@@ -38,5 +38,5 @@ cd xbutton-relayer && npm install && npm run dev
 ## Related
 
 - `../contracts/tezlink` — LIGO / Michelson game contract
-- `../xbutton-frontend` — MetaMask UI
+- `../xbutton-frontend` — Browser wallet UI
 - `../README.md` — workspace overview

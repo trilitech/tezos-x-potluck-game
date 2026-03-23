@@ -4,10 +4,10 @@ Minimal React + Vite frontend for the Tezos X / CRAC XButton demo.
 
 ## What It Does
 
-- Connects MetaMask and checks network / chain ID.
+- Connects a browser wallet (EIP-1193 / `window.ethereum`) and checks network / chain ID.
 - Polls Tezlink storage every few seconds and shows pot, session end, claim flags, and **current last player** (EVM address from contract **`last_player_evm`**).
 - Sends **1 USDC** (configurable) to the EVM escrow and waits for Tezlink storage to reflect the new pot.
-- **Claim winnings** — after the session ends, calls CRAC `claim` on the game contract. A pre-check compares your connected wallet to the stored EVM last player (no extra RPC through MetaMask before the transaction).
+- **Claim winnings** — after the session ends, calls CRAC `claim` on the game contract. A pre-check compares your connected wallet to the stored EVM last player (no extra wallet RPC before the transaction).
 - **Start new session** — calls CRAC `start_session` when the UI allows it.
 
 ## What It Does Not Do
@@ -47,8 +47,8 @@ npm run preview
 
 ## Demo Requirements
 
-- MetaMask installed
-- MetaMask connected to the TezosX EVM network
+- A browser wallet extension installed (any EIP-1193 provider)
+- Wallet connected to the TezosX EVM network
 - Chain ID set to `127124` (or your deployment)
 - A wallet with enough USDC for the configured press amount
 - The relayer running in `xbutton-relayer`

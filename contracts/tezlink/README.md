@@ -83,7 +83,7 @@ Replace `<PASTE_OUTPUT_OF_LIGO_COMPILE_STORAGE_HERE>` with the exact output from
 
 ### Start a session (after origination)
 
-**Option A — From the frontend:** After the previous session **ends**, the “Start new session” button appears (even if no one claimed yet, or claim is pending payout). Click it to call `start_session` via CRAC from MetaMask.
+**Option A — From the frontend:** After the previous session **ends**, the “Start new session” button appears (even if no one claimed yet, or claim is pending payout). Click it to call `start_session` via CRAC from your wallet.
 
 **Option B — From octez-client (any key):**
 

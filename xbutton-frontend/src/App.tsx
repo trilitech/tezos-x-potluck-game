@@ -396,10 +396,10 @@ function App() {
   const [payoutTxHash, setPayoutTxHash] = useState<string | null>(null);
   const [actionState, setActionState] = useState<ActionState>({
     kind: "idle",
-    message: "Connect MetaMask, then press the button to deposit 1 USDC to the escrow.",
+    message: "Connect your wallet, then press the button to deposit 1 USDC to the escrow.",
   });
 
-  const hasMetaMask = typeof window !== "undefined" && Boolean(getEthereum());
+  const hasInjectedWallet = typeof window !== "undefined" && Boolean(getEthereum());
   const onExpectedNetwork = walletState.chainId === CONFIG.chainId;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const sessionActive = gameState ? gameState.sessionEnd > nowSeconds : true;
@@ -408,7 +408,7 @@ function App() {
     walletState.usdcAllowance !== null &&
     walletState.usdcAllowance < PRESS_AMOUNT_UNITS;
   const canPressButton =
-    hasMetaMask &&
+    hasInjectedWallet &&
     Boolean(walletState.address) &&
     onExpectedNetwork &&
     !isSubmitting &&
@@ -416,7 +416,7 @@ function App() {
     !gameState?.claimed;
 
   const canClaim =
-    hasMetaMask &&
+    hasInjectedWallet &&
     Boolean(walletState.address) &&
     onExpectedNetwork &&
     !sessionActive &&
@@ -425,7 +425,7 @@ function App() {
 
   // Session ended: allow starting a new round even if prior claim/payout is still pending (on-chain reset).
   const canStartNewSession =
-    hasMetaMask &&
+    hasInjectedWallet &&
     Boolean(walletState.address) &&
     onExpectedNetwork &&
     !isStartingSession &&
@@ -553,7 +553,7 @@ function App() {
     try {
       await refreshWalletState(true);
     } catch (error) {
-      setWalletError(error instanceof Error ? error.message : "Failed to connect MetaMask.");
+      setWalletError(error instanceof Error ? error.message : "Failed to connect wallet.");
     } finally {
       setIsConnecting(false);
     }
@@ -576,7 +576,7 @@ function App() {
     setWalletState({ address: null, chainId: null, usdcBalance: null, usdcAllowance: null });
     setActionState({
       kind: "idle",
-      message: "Wallet disconnected. Connect MetaMask again to press the button.",
+      message: "Wallet disconnected. Connect your wallet again to press the button.",
     });
   }
 
@@ -634,17 +634,17 @@ function App() {
   async function pressButton() {
     const ethereum = getEthereum();
     if (!ethereum) {
-      setActionState({ kind: "error", message: "MetaMask is not available in this browser." });
+      setActionState({ kind: "error", message: "No browser wallet is available in this browser." });
       return;
     }
 
     if (!walletState.address) {
-      setActionState({ kind: "error", message: "Connect MetaMask before pressing the button." });
+      setActionState({ kind: "error", message: "Connect your wallet before pressing the button." });
       return;
     }
 
     if (!onExpectedNetwork) {
-      setActionState({ kind: "error", message: "Switch MetaMask to TezosX EVM first." });
+      setActionState({ kind: "error", message: "Switch your wallet to TezosX EVM first." });
       return;
     }
 
@@ -672,7 +672,7 @@ function App() {
       }
 
       if (needsApproval) {
-        setActionState({ kind: "pending", message: "Approve USDC spend. Confirm in MetaMask." });
+        setActionState({ kind: "pending", message: "Approve USDC spend. Confirm in your wallet." });
         const usdc = new ethers.Contract(CONFIG.usdcAddress, ERC20_ABI, signer);
         const approveTx = await usdc.approve(CONFIG.potAddress, PRESS_AMOUNT_UNITS);
         await approveTx.wait();
@@ -682,7 +682,7 @@ function App() {
       const escrow = new ethers.Contract(CONFIG.potAddress, ESCROW_ABI, signer);
       setActionState({
         kind: "pending",
-        message: "Confirm the 1 USDC deposit in MetaMask.",
+        message: "Confirm the 1 USDC deposit in your wallet.",
       });
 
       const tx = await escrow.deposit(PRESS_AMOUNT_UNITS);
@@ -719,17 +719,17 @@ function App() {
   async function claimContract() {
     const ethereum = getEthereum();
     if (!ethereum) {
-      setActionState({ kind: "error", message: "MetaMask is not available in this browser." });
+      setActionState({ kind: "error", message: "No browser wallet is available in this browser." });
       return;
     }
 
     if (!walletState.address) {
-      setActionState({ kind: "error", message: "Connect MetaMask before claiming." });
+      setActionState({ kind: "error", message: "Connect your wallet before claiming." });
       return;
     }
 
     if (!onExpectedNetwork) {
-      setActionState({ kind: "error", message: "Switch MetaMask to TezosX EVM first." });
+      setActionState({ kind: "error", message: "Switch your wallet to TezosX EVM first." });
       return;
     }
 
@@ -766,7 +766,7 @@ function App() {
 
       setActionState({
         kind: "pending",
-        message: "Confirm the claim transaction in MetaMask.",
+        message: "Confirm the claim transaction in your wallet.",
       });
 
       const provider = new ethers.BrowserProvider(ethereum);
@@ -838,7 +838,7 @@ function App() {
   async function startNewSession() {
     const ethereum = getEthereum();
     if (!ethereum || !walletState.address || !onExpectedNetwork) {
-      setActionState({ kind: "error", message: "Connect MetaMask and switch to TezosX EVM." });
+      setActionState({ kind: "error", message: "Connect your wallet and switch to TezosX EVM." });
       return;
     }
     setIsStartingSession(true);
@@ -900,7 +900,7 @@ function App() {
             <h2>Wallet</h2>
             <div className="wallet-actions">
               {!walletState.address ? (
-                <button onClick={connectWallet} disabled={isConnecting || !hasMetaMask}>
+                <button onClick={connectWallet} disabled={isConnecting || !hasInjectedWallet}>
                   {isConnecting ? "Connecting..." : "Connect wallet"}
                 </button>
               ) : !onExpectedNetwork ? (
@@ -952,8 +952,8 @@ function App() {
             .
           </p>
 
-          {!hasMetaMask ? (
-            <p className="inline-note error">MetaMask was not detected in this browser.</p>
+          {!hasInjectedWallet ? (
+            <p className="inline-note error">No Ethereum wallet extension was detected in this browser.</p>
           ) : null}
           {walletError ? <p className="inline-note error">{walletError}</p> : null}
         </section>
