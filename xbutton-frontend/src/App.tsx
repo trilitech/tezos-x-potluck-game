@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { ethers } from "ethers";
 import "./App.css";
 
@@ -17,6 +17,11 @@ const cracPrecompile =
 const usdcDecimals = Number(import.meta.env.VITE_USDC_DECIMALS ?? "6");
 const pressAmount = import.meta.env.VITE_PRESS_AMOUNT ?? "1";
 const pollIntervalMs = Number(import.meta.env.VITE_POLL_INTERVAL_MS ?? "5000");
+/** Max time to wait for Tezlink pot to reflect the deposit after EVM confirmation (relayer → CRAC). Default 4 min. */
+const gameStateWaitTimeoutMs = (() => {
+  const n = Number(import.meta.env.VITE_GAME_STATE_WAIT_TIMEOUT_MS ?? "240000");
+  return Number.isFinite(n) && n > 0 ? n : 240000;
+})();
 const DEFAULT_TESTNET_FAUCET_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/";
 const faucetUrl =
   import.meta.env.VITE_FAUCET_URL?.trim() || DEFAULT_TESTNET_FAUCET_URL;
@@ -40,6 +45,7 @@ const CONFIG = {
   usdcDecimals,
   pressAmount,
   pollIntervalMs,
+  gameStateWaitTimeoutMs,
 } as const;
 
 function evmAddressUrl(address: string) {
@@ -83,7 +89,7 @@ const GATEWAY_ABI = [
   "function callMichelson(string destination, string entrypoint, bytes data) external payable",
 ];
 
-// Micheline binary for Unit — the claim entrypoint parameter.
+// Micheline binary for Unit - the claim entrypoint parameter.
 // The gateway routes by entrypoint name, so we only encode the parameter value itself.
 // 03 = bare prim (no args, no annotations), 0b = D_Unit
 const CLAIM_PARAM_HEX = "030b";
@@ -120,7 +126,7 @@ type TezlinkNode = {
 };
 
 type GameState = {
-  /** Tezlink identity for the last depositor — matched against Tezos.get_sender on claim. */
+  /** Tezlink identity for the last depositor - matched against Tezos.get_sender on claim. */
   lastPlayerTezos: string | null;
   /** Raw 20-byte EVM address of the last depositor, stored directly in contract storage. */
   lastPlayerAddress: string | null;
@@ -139,11 +145,182 @@ type WalletState = {
   usdcAllowance: bigint | null;
 };
 
+type FlowStepStatus = "upcoming" | "active" | "done";
+
+type FlowStep = {
+  id: string;
+  label: string;
+  detail?: string;
+  status: FlowStepStatus;
+};
+
+type FlowStepDef = { id: string; label: string; detail?: string };
+
+function markFlowSteps(defs: FlowStepDef[], activeId: string): FlowStep[] {
+  const activeIndex = defs.findIndex((d) => d.id === activeId);
+  const ai = activeIndex === -1 ? 0 : activeIndex;
+  const visible = defs.slice(0, ai + 1);
+  return visible.map((d, idx) => ({
+    id: d.id,
+    label: d.label,
+    ...(d.detail ? { detail: d.detail } : {}),
+    status: (idx < ai ? "done" : "active") as FlowStepStatus,
+  }));
+}
+
+function completeFlowSteps(defs: FlowStepDef[]): FlowStep[] {
+  return defs.map((d) => ({ ...d, status: "done" as const }));
+}
+
+function pressStepDefs(needsApproval: boolean): FlowStepDef[] {
+  return [
+    {
+      id: "prepare",
+      label: "Load game state from Tezlink",
+      detail: "Loading the latest round from Tezlink so the sidebar matches the chain.",
+    },
+    ...(needsApproval
+      ? [
+          {
+            id: "approve",
+            label: "Approve USDC for the escrow",
+            detail:
+              "Your wallet prompts you to let the escrow contract pull USDC. Only the amount you approve can move.",
+          },
+        ]
+      : []),
+    {
+      id: "wallet_deposit",
+      label: "Deposit 1 USDC into the escrow",
+      detail:
+        "You confirm a deposit on the escrow contract. USDC moves into the game pot on Tezos X EVM.",
+    },
+    {
+      id: "evm_confirm",
+      label: "Waiting for Tezos X EVM Confirmation",
+      detail: "The network confirms your deposit transaction.",
+    },
+    {
+      id: "relayer_crac",
+      label: "Relayer is calling the CRAC gateway",
+      detail:
+        "The relayer is calling the CRAC gateway; Tezlink game state is updating to match your deposit.",
+    },
+  ];
+}
+
+const CLAIM_STEP_DEFS: FlowStepDef[] = [
+  {
+    id: "check",
+    label: "We're checking that you're the last depositor",
+    detail: "We compare your connected wallet with the last depositor stored on Tezlink. Only that wallet can claim the pot.",
+  },
+  {
+    id: "wallet_claim",
+    label: "Confirm the claim in your wallet",
+    detail: "When your wallet opens, approve the claim transaction. CRAC sends that claim from Tezos X EVM to the game on Tezlink.",
+  },
+  {
+    id: "evm_claim",
+    label: "We're waiting for Tezos X EVM confirmation",
+    detail: "After the claim is confirmed, the relayer sees it and pays the winnings from the escrow pot to your wallet in USDC.",
+  },
+];
+
+const START_SESSION_STEP_DEFS: FlowStepDef[] = [
+  {
+    id: "wallet_start",
+    label: "Start a new round",
+  },
+  {
+    id: "evm_start",
+    label: "Waiting for Tezos X EVM Confirmation",
+  },
+];
+
+function FlowProgress({ steps }: { steps: FlowStep[] }) {
+  return (
+    <ol className="flow-progress" aria-label="Steps">
+      {steps.map((step, idx) => (
+        <li
+          key={step.id}
+          className={`flow-step flow-step--${step.status}`}
+          style={{ "--flow-step-index": idx } as CSSProperties}
+          aria-current={step.status === "active" ? "step" : undefined}
+        >
+          <span className="flow-step-marker" aria-hidden />
+          <div className="flow-step-body">
+            <span className="flow-step-label">{step.label}</span>
+            {step.detail ? <p className="flow-step-detail">{step.detail}</p> : null}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+type JourneyPhase = "connect" | "network" | "ready";
+
+function JourneyIntro({ phase }: { phase: JourneyPhase }) {
+  return (
+    <section className={`panel journey-intro journey-intro--${phase}`} aria-labelledby="journey-heading">
+      <h2 id="journey-heading" className="journey-title">
+        How this demo works
+      </h2>
+      {phase === "connect" ? (
+        <>
+          <p className="journey-lead">
+            You use one <strong>Tezos X EVM</strong> wallet. USDC goes into the escrow pot on Tezos X EVM, while the
+            game state is <strong>stored in Tezlink</strong>. <strong>CRAC</strong> and a <strong>relayer</strong> keep
+            Tezlink synced with your deposits, so no second wallet is needed.
+          </p>
+          <ul className="journey-bullets">
+            <li>
+              <strong>Tezos X EVM</strong>: USDC in the pot; deposits and payouts happen here.
+            </li>
+            <li>
+              <strong>Tezlink</strong>: tracks each 5-minute session. If you are the last depositor when a game session
+              ends, you win.
+            </li>
+            <li>
+              <strong>CRAC</strong>: updates Tezlink from Tezos X EVM actions and carries your claim so the relayer can
+              pay out the pot.
+            </li>
+          </ul>
+          <p className="journey-hint">
+            Sessions last 5 minutes. When one ends, click Start new session to begin another.
+          </p>
+        </>
+      ) : phase === "network" ? (
+        <p className="journey-lead">
+          Please switch to <strong>Tezos X EVM</strong>. This app is wired for that network only, so CRAC can reach
+          the Tezlink game.
+        </p>
+      ) : (
+        <>
+          <p className="journey-lead">
+            Connect your wallet on <strong>Tezos X EVM</strong>. Press the Button below to deposit into the escrow pot;{" "}
+            <strong>CRAC</strong> then updates the game state on <strong>Tezlink</strong>.
+          </p>
+          <ol className="journey-mini-steps">
+            <li>To play, connect your wallet and click the start new session button.</li>
+            <li>Press X button to deposit 1 USDC into the escrow/game pot from your wallet.</li>
+            <li>
+              The last depositor wins when the game session ends and can claim winnings from the pot using the wallet
+              address they deposited with.
+            </li>
+          </ol>
+        </>
+      )}
+    </section>
+  );
+}
+
 type ActionState =
-  | { kind: "idle"; message: string; txHash?: undefined }
-  | { kind: "pending"; message: string; txHash?: string }
-  | { kind: "success"; message: string; txHash?: string }
-  | { kind: "error"; message: string; txHash?: string };
+  | { kind: "idle"; message: string; txHash?: undefined; steps?: undefined }
+  | { kind: "pending"; message: string; txHash?: string; steps?: FlowStep[] }
+  | { kind: "success"; message: string; txHash?: string; steps?: FlowStep[] }
+  | { kind: "error"; message: string; txHash?: string; steps?: undefined };
 
 type EthereumProvider = ethers.Eip1193Provider & {
   on?: (event: string, listener: (...args: unknown[]) => void) => void;
@@ -156,7 +333,7 @@ function getEthereum(): EthereumProvider | undefined {
 }
 
 const TEZOS_X_EVM_WALLET_HINT =
-  "We couldn't detect your wallet is on Tezos X EVM. Make sure you're connecting with a wallet on the Tezos X EVM.";
+  "Your wallet does not look like it is on Tezos X EVM yet. Add or switch to that network, then try again.";
 
 /** Tezos X testnet dashboard (RPC, chain ID, Tezlink, explorers). */
 const TEZOS_X_TESTNET_DASHBOARD_URL = "https://demo.txpark.nomadic-labs.com/";
@@ -166,7 +343,7 @@ function isUserRejectedWalletError(error: unknown): boolean {
   return e.code === 4001 || e.code === "ACTION_REJECTED";
 }
 
-/** Ethers BAD_DATA / empty `0x` when reading a contract — usually wrong chain or token not deployed there. */
+/** Ethers BAD_DATA / empty `0x` when reading a contract - usually wrong chain or token not deployed there. */
 function isBadContractRpcResultError(error: unknown): boolean {
   const err = error as { code?: string; message?: string; shortMessage?: string };
   const text = `${err?.code ?? ""} ${err?.message ?? ""} ${err?.shortMessage ?? ""}`.toLowerCase();
@@ -191,7 +368,7 @@ function ExplorableAddress({
   displayText?: string;
   type?: "address" | "token" | "contract";
 }) {
-  if (!address) return <>{displayText ?? "—"}</>;
+  if (!address) return <>{displayText ?? "-"}</>;
   const text = displayText ?? shortenAddress(address, 8);
   const href =
     type === "token" && isEvmAddress(address)
@@ -359,7 +536,7 @@ async function fetchGameState(): Promise<GameState> {
     catch (e) { console.warn("Could not decode last_player bytes:", e); }
   }
 
-  // EVM address comes directly from storage — no log scan or RPC needed.
+  // EVM address comes directly from storage - no log scan or RPC needed.
   let lastPlayerAddress: string | null = null;
   if (lastPlayerEvmHex) {
     try { lastPlayerAddress = ethers.getAddress("0x" + lastPlayerEvmHex); }
@@ -413,7 +590,7 @@ function collectErrorText(error: unknown): string {
     .toLowerCase();
 }
 
-/** USDC deposit / approve flow — hides raw CALL_EXCEPTION + estimateGas noise. */
+/** USDC deposit / approve flow - hides raw CALL_EXCEPTION + estimateGas noise. */
 function formatPressButtonError(error: unknown): string {
   const e = error as { code?: string; message?: string; shortMessage?: string };
   const parts = collectErrorText(error);
@@ -427,7 +604,7 @@ function formatPressButtonError(error: unknown): string {
   }
 
   if (e?.code === "INSUFFICIENT_FUNDS" || parts.includes("insufficient funds")) {
-    return "Not enough native token to pay network fees. Add gas (e.g. XTZ on this network) and try again.";
+    return "Not enough native coin for gas fees. Add a little XTZ on this network and try again.";
   }
 
   if (
@@ -437,18 +614,24 @@ function formatPressButtonError(error: unknown): string {
     parts.includes("estimategas")
   ) {
     return (
-      "Couldn’t complete the deposit. This usually means your USDC balance is below 1 USDC, " +
-      "or the wallet couldn’t preview the transfer. Top up USDC, complete the approval if your wallet asks, " +
-      "and confirm you’re on Tezos X EVM with the right USDC and escrow addresses."
+      "The deposit did not go through. Most often you need at least 1 USDC, the right network (Tezos X EVM), " +
+      "and an approval if the wallet asked for one."
     );
   }
 
   if (parts.includes("transfer_from_failed") || parts.includes("transferfrom")) {
-    return "USDC couldn’t be moved to the escrow. Keep at least 1 USDC and approve spending to the escrow when prompted.";
+    return "USDC did not reach the escrow. Keep at least 1 USDC and approve when the wallet asks.";
   }
 
   if (parts.includes("allowance too low") || parts.includes("allowance")) {
-    return "USDC allowance for the escrow is too low. Approve again when your wallet prompts you.";
+    return "The escrow needs permission to use your USDC. Approve again when your wallet prompts you.";
+  }
+
+  if (e?.message === "GAME_STATE_RELAYER_TIMEOUT") {
+    return (
+      "Your deposit went through, but the game view did not update in time. Wait a moment, refresh the page, " +
+      "and check the pot on the right."
+    );
   }
 
   const short = (e?.shortMessage ?? (error instanceof Error ? error.message : "")).trim();
@@ -456,7 +639,7 @@ function formatPressButtonError(error: unknown): string {
     return short;
   }
 
-  return "Deposit couldn’t finish. Check USDC balance (≥ 1 USDC), approval, and network, then try again.";
+  return "Something stopped the deposit. Check USDC balance, network, and approval, then try again.";
 }
 
 /** CRAC / gateway calls (claim, start_session) when not already handled by revert branch. */
@@ -475,7 +658,7 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
   }
 
   if (e?.code === "INSUFFICIENT_FUNDS" || parts.includes("insufficient funds")) {
-    return "Not enough gas token to send this transaction. Add funds for fees and try again.";
+    return "Not enough coin for gas. Add funds for fees and try again.";
   }
 
   if (
@@ -485,8 +668,8 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
     parts.includes("estimategas")
   ) {
     return kind === "claim"
-      ? "The claim couldn’t be sent. Check gas balance, Tezos X EVM network, and refresh for the latest game state."
-      : "Couldn’t start a new session. Check gas balance, Tezos X EVM, and try again.";
+      ? "The claim did not send. Check gas, that you are on Tezos X EVM, then refresh and try again."
+      : "Could not start a new session. Check gas and that you are on Tezos X EVM, then try again.";
   }
 
   return (e?.shortMessage ?? e?.message ?? (kind === "claim" ? "Claim failed." : "Start session failed.")).trim();
@@ -510,7 +693,7 @@ function App() {
   const [payoutTxHash, setPayoutTxHash] = useState<string | null>(null);
   const [actionState, setActionState] = useState<ActionState>({
     kind: "idle",
-    message: "Connect your wallet, then press the button to deposit 1 USDC to the escrow.",
+    message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
   });
 
   const hasInjectedWallet = typeof window !== "undefined" && Boolean(getEthereum());
@@ -550,6 +733,12 @@ function App() {
     if (!gameState) return "Loading...";
     return new Date(gameState.sessionEnd * 1000).toLocaleString();
   }, [gameState]);
+
+  const journeyPhase = useMemo((): JourneyPhase => {
+    if (!walletState.address) return "connect";
+    if (!onExpectedNetwork) return "network";
+    return "ready";
+  }, [walletState.address, onExpectedNetwork]);
 
   const refreshWalletState = useCallback(async (requestAccounts = false) => {
     if (isWalletDisconnected && !requestAccounts) {
@@ -728,7 +917,7 @@ function App() {
     setWalletState({ address: null, chainId: null, usdcBalance: null, usdcAllowance: null });
     setActionState({
       kind: "idle",
-      message: "Wallet disconnected. Connect your wallet again to press the button.",
+      message: "Wallet disconnected. Connect again to keep going.",
     });
   }
 
@@ -768,10 +957,34 @@ function App() {
     await refreshWalletState(false);
   }
 
-  async function waitForGameStateUpdate(previousState: GameState) {
-    // Poll for up to ~4 minutes (48 × 5 s). CRAC relay can take 1–2 minutes on busy chains.
-    for (let attempt = 0; attempt < 48; attempt += 1) {
-      await sleep(CONFIG.pollIntervalMs);
+  async function waitForGameStateUpdate(
+    previousState: GameState,
+    stepDefs: FlowStepDef[],
+    depositTxHash: string,
+  ) {
+    const deadline = Date.now() + CONFIG.gameStateWaitTimeoutMs;
+    const t0 = Date.now();
+
+    const updateGameSyncProgress = () => {
+      const elapsed = Math.floor((Date.now() - t0) / 1000);
+      setActionState({
+        kind: "pending",
+        message: `Relayer is calling the CRAC gateway and updating Tezlink… (${elapsed}s)`,
+        steps: markFlowSteps(stepDefs, "relayer_crac"),
+        txHash: depositTxHash,
+      });
+    };
+
+    updateGameSyncProgress();
+
+    while (true) {
+      const now = Date.now();
+      if (now >= deadline) {
+        throw new Error("GAME_STATE_RELAYER_TIMEOUT");
+      }
+      const sleepMs = Math.min(CONFIG.pollIntervalMs, deadline - now);
+      await sleep(sleepMs);
+      updateGameSyncProgress();
       const nextState = await fetchGameState();
       setGameState(nextState);
       setGameStateError(null);
@@ -779,8 +992,10 @@ function App() {
       if (BigInt(nextState.potRaw) > BigInt(previousState.potRaw)) {
         return nextState;
       }
+      if (Date.now() >= deadline) {
+        throw new Error("GAME_STATE_RELAYER_TIMEOUT");
+      }
     }
-    throw new Error("Deposit confirmed on-chain, but the Tezlink state is taking longer than expected. The relay may still be processing — check back shortly.");
   }
 
   async function pressButton() {
@@ -801,9 +1016,13 @@ function App() {
     }
 
     setIsSubmitting(true);
+    const approvalNeeded = Boolean(needsApproval);
+    const depositSteps = pressStepDefs(approvalNeeded);
+
     setActionState({
       kind: "pending",
-      message: "Preparing the 1 USDC deposit to the escrow.",
+      message: "Loading game state from Tezlink…",
+      steps: markFlowSteps(depositSteps, "prepare"),
     });
 
     try {
@@ -812,19 +1031,23 @@ function App() {
       const currentState = gameState ?? (await fetchGameState());
 
       if (!currentState) {
-        throw new Error("Game state is unavailable.");
+        throw new Error("Could not load game data. Refresh and try again.");
       }
 
       if (currentState.claimed) {
-        throw new Error("This session has already been claimed.");
+        throw new Error("This round was already claimed.");
       }
 
       if (currentState.sessionEnd <= Math.floor(Date.now() / 1000)) {
-        throw new Error("The current session has already ended.");
+        throw new Error("This round has ended.");
       }
 
-      if (needsApproval) {
-        setActionState({ kind: "pending", message: "Approve USDC spend. Confirm in your wallet." });
+      if (approvalNeeded) {
+        setActionState({
+          kind: "pending",
+          message: "Approve USDC when your wallet asks.",
+          steps: markFlowSteps(depositSteps, "approve"),
+        });
         const usdc = new ethers.Contract(CONFIG.usdcAddress, ERC20_ABI, signer);
         const approveTx = await usdc.approve(CONFIG.potAddress, PRESS_AMOUNT_UNITS);
         await approveTx.wait();
@@ -835,30 +1058,27 @@ function App() {
       setActionState({
         kind: "pending",
         message: "Confirm the 1 USDC deposit in your wallet.",
+        steps: markFlowSteps(depositSteps, "wallet_deposit"),
       });
 
       const tx = await escrow.deposit(PRESS_AMOUNT_UNITS);
       setActionState({
         kind: "pending",
-        message: "Deposit submitted. Waiting for EVM confirmation...",
+        message: "Waiting for confirmation…",
+        steps: markFlowSteps(depositSteps, "evm_confirm"),
         txHash: tx.hash,
       });
 
       await tx.wait();
 
-      setActionState({
-        kind: "pending",
-        message: "Deposit confirmed. Waiting for the Tezos runtime state update...",
-        txHash: tx.hash,
-      });
-
-      await waitForGameStateUpdate(currentState);
+      await waitForGameStateUpdate(currentState, depositSteps, tx.hash);
       await refreshWalletState(false);
 
       setActionState({
         kind: "success",
-        message: "Button press recorded. The Tezlink game state has updated.",
+        message: "Done. Your deposit is in and the game view is updated.",
         txHash: tx.hash,
+        steps: completeFlowSteps(depositSteps),
       });
     } catch (error) {
       setActionState({ kind: "error", message: formatPressButtonError(error) });
@@ -885,7 +1105,11 @@ function App() {
     }
 
     setIsClaiming(true);
-    setActionState({ kind: "pending", message: "Checking claim status..." });
+    setActionState({
+      kind: "pending",
+      message: "Checking if you can claim…",
+      steps: markFlowSteps(CLAIM_STEP_DEFS, "check"),
+    });
 
     try {
       const currentState = await refreshGameState();
@@ -902,13 +1126,13 @@ function App() {
         return;
       }
 
-      // Pre-flight: compare EVM addresses directly — no RPC call needed now that
+      // Pre-flight: compare EVM addresses directly - no RPC call needed now that
       // last_player_evm is stored in the contract.
       if (currentState?.lastPlayerAddress && walletState.address) {
         if (walletState.address.toLowerCase() !== currentState.lastPlayerAddress.toLowerCase()) {
           setActionState({
             kind: "error",
-            message: `Only the last depositor can claim. Last player: ${currentState.lastPlayerAddress}. Your wallet: ${walletState.address}.`,
+            message: `Only the last person who pressed can claim. Expected ${currentState.lastPlayerAddress}, but this wallet is ${walletState.address}.`,
           });
           setIsClaiming(false);
           return;
@@ -917,7 +1141,8 @@ function App() {
 
       setActionState({
         kind: "pending",
-        message: "Confirm the claim transaction in your wallet.",
+        message: "Confirm the claim in your wallet.",
+        steps: markFlowSteps(CLAIM_STEP_DEFS, "wallet_claim"),
       });
 
       const provider = new ethers.BrowserProvider(ethereum);
@@ -933,7 +1158,8 @@ function App() {
 
       setActionState({
         kind: "pending",
-        message: "Claim submitted. Waiting for confirmation...",
+        message: "Waiting for confirmation…",
+        steps: markFlowSteps(CLAIM_STEP_DEFS, "evm_claim"),
         txHash: tx.hash,
       });
 
@@ -942,8 +1168,9 @@ function App() {
 
       setActionState({
         kind: "success",
-        message: "Claim recorded. Waiting for payout...",
+        message: "Claim submitted. USDC goes to the winner next.",
         txHash: tx.hash,
+        steps: completeFlowSteps(CLAIM_STEP_DEFS),
       });
     } catch (error) {
       console.error("[claim] error:", error);
@@ -962,7 +1189,7 @@ function App() {
           setActionState({
             kind: "success",
             message:
-              "This session has already been claimed. Winnings have been sent to the last player."
+              "Already claimed. Winnings went to the last player."
               + (payoutHash ? " Payout transaction below." : ""),
             txHash: payoutHash ?? undefined,
           });
@@ -972,8 +1199,8 @@ function App() {
           setActionState({
             kind: "error",
             message: notLast
-              ? "Only the last depositor can claim. Connect the wallet that most recently pressed the button, or wait until the session ends and roles are clear."
-              : "Claim failed on-chain. The session may still be active, or someone may have claimed already. Refresh the page and check game state.",
+              ? "Only the wallet that pressed last can claim. Switch wallet or wait until the round ends."
+              : "Claim failed. Refresh the page and read the game state on the right.",
           });
         }
       } else {
@@ -991,7 +1218,11 @@ function App() {
       return;
     }
     setIsStartingSession(true);
-    setActionState({ kind: "pending", message: "Starting new session..." });
+    setActionState({
+      kind: "pending",
+      message: "Confirm the new session in your wallet.",
+      steps: markFlowSteps(START_SESSION_STEP_DEFS, "wallet_start"),
+    });
     try {
       const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
@@ -1005,15 +1236,17 @@ function App() {
       );
       setActionState({
         kind: "pending",
-        message: "Transaction submitted. Waiting for confirmation...",
+        message: "Waiting for confirmation…",
+        steps: markFlowSteps(START_SESSION_STEP_DEFS, "evm_start"),
         txHash: tx.hash,
       });
       await tx.wait();
       await refreshGameState();
       setActionState({
         kind: "success",
-        message: `New session started (${DEFAULT_SESSION_DURATION_SEC / 60} minutes). You can press the button again.`,
+        message: `New session started (${DEFAULT_SESSION_DURATION_SEC / 60} min). Press the X button to play.`,
         txHash: tx.hash,
+        steps: completeFlowSteps(START_SESSION_STEP_DEFS),
       });
     } catch (error) {
       const err = error as { code?: string; message?: string; shortMessage?: string };
@@ -1024,7 +1257,7 @@ function App() {
       setActionState({
         kind: "error",
         message: isRevert
-          ? "Couldn’t start a new session on-chain. Refresh the page, confirm you’re on Tezos X EVM, and try again."
+          ? "Could not start a new session. Refresh, check you are on Tezos X EVM, and try again."
           : formatGatewayError(error, "start_session"),
       });
     } finally {
@@ -1034,19 +1267,20 @@ function App() {
 
   return (
     <div className="app-shell">
-      <main className="app">
-        <header className="hero">
-          <p className="eyebrow">Tezos X / CRAC Demo</p>
-          <h1>XButton</h1>
-          <p className="hero-copy">
-            Send exactly 1 USDC on the EVM runtime, then watch the relayer update Michelson
-            storage on Tezos.
-          </p>
-        </header>
+      <main className="app app-layout">
+        <div className="main-column">
+          <header className="hero">
+            <h1>XButton</h1>
+            <p className="hero-copy">
+              The XButton app uses a simple game to show how CRAC (Cross-Runtime Asynchronous Calls) works on Tezos.
+            </p>
+          </header>
 
-        <section className="panel">
-          <div className="panel-header">
-            <h2>Wallet</h2>
+          <JourneyIntro phase={journeyPhase} />
+
+          <section className="panel wallet-panel">
+            <div className="panel-header">
+              <h2>Wallet</h2>
             <div className="wallet-actions">
               {!walletState.address ? (
                 <button onClick={connectWallet} disabled={isConnecting || !hasInjectedWallet}>
@@ -1102,7 +1336,7 @@ function App() {
           </p>
 
           {!hasInjectedWallet ? (
-            <p className="inline-note error">No Ethereum wallet extension was detected in this browser.</p>
+            <p className="inline-note error">No wallet add-on detected. Install something like MetaMask, then reload.</p>
           ) : null}
           {walletError ? (
             walletError === TEZOS_X_EVM_WALLET_HINT ? (
@@ -1124,61 +1358,6 @@ function App() {
           ) : null}
         </section>
 
-        <section className="panel">
-          <div className="panel-header">
-            <h2>Live Game State</h2>
-            <span className="chip">Polling every 5s</span>
-          </div>
-
-          <div className="grid two">
-            <div className="stat">
-              <span>POT BALANCE</span>
-              <strong>{gameState ? `${gameState.potDisplay} USDC` : "Loading..."}</strong>
-            </div>
-            <div className="stat">
-              <span>Current Last Player</span>
-              <strong>
-                {!gameState ? (
-                  "Loading..."
-                ) : gameState.lastPlayerAddress ? (
-                  <ExplorableAddress address={gameState.lastPlayerAddress} />
-                ) : gameState.lastPlayerTezos ? (
-                  "Resolving…"
-                ) : (
-                  "—"
-                )}
-              </strong>
-            </div>
-            <div className="stat">
-              <span>Session Ends</span>
-              <strong>{sessionLabel}</strong>
-            </div>
-            <div className="stat">
-              <span>Claimed</span>
-              <strong>{gameState ? (gameState.claimed ? "Yes" : "No") : "Loading..."}</strong>
-            </div>
-            <div className="stat">
-              <span>Pot Address</span>
-              <strong>
-                <ExplorableAddress address={CONFIG.potAddress} />
-              </strong>
-            </div>
-            <div className="stat">
-              <span>Game Contract</span>
-              <strong>
-                <ExplorableAddress address={CONFIG.gameContract} />
-              </strong>
-            </div>
-          </div>
-
-          {gameState ? (
-            <p className="inline-note">
-              Last refresh: {new Date(gameState.fetchedAt).toLocaleTimeString()}
-            </p>
-          ) : null}
-          {gameStateError ? <p className="inline-note error">{gameStateError}</p> : null}
-        </section>
-
         <section className="panel action-panel">
           <div className="panel-header">
             <h2>Press The Button</h2>
@@ -1197,22 +1376,26 @@ function App() {
 
           <p className="action-copy">
             {canStartNewSession
-              ? "Starts a fresh session on the game contract (resets pot and claim state). Use when the previous session ended — even if winnings were not claimed yet or payout is still pending."
-              : "Press once to deposit 1 USDC to the escrow. If needed, approve and deposit happen in sequence. The relayer detects the deposit, maps your EVM address with tez_getEthereumTezosAddress, and calls `record_deposit` through the CRAC gateway."}
+              ? "Starts a new round and clears the game pot."
+              : "Sends 1 USDC to the escrow. Approve USDC first if your wallet asks. The steps below explain each part in order."}
           </p>
 
-          <button className="primary-button" onClick={pressButton} disabled={!canPressButton}>
-            {isSubmitting ? "Processing..." : "Press XButton"}
-          </button>
-
-          {canClaim ? (
-            <button className="primary-button" onClick={claimContract} disabled={!canClaim}>
-              {isClaiming ? "Claiming..." : "Claim Winnings"}
+          <div className="action-primary-buttons">
+            <button className="primary-button" onClick={pressButton} disabled={!canPressButton}>
+              {isSubmitting ? "Processing..." : "Press XButton"}
             </button>
-          ) : null}
+
+            {canClaim ? (
+              <button className="primary-button" onClick={claimContract} disabled={!canClaim}>
+                {isClaiming ? "Claiming..." : "Claim Winnings"}
+              </button>
+            ) : null}
+          </div>
 
           {!sessionActive && !gameState?.claimed ? (
-            <p className="inline-note error">The session has ended, so deposits will not update the game.</p>
+            <p className="inline-note error">
+              This round is over, so new deposits will not change the game. Start a new session to continue.
+            </p>
           ) : null}
           {gameState?.payoutCompleted ? (
             <p className="inline-note">
@@ -1233,33 +1416,112 @@ function App() {
           gameState.lastPlayerAddress &&
           walletState.address.toLowerCase() !== gameState.lastPlayerAddress.toLowerCase() ? (
             <p className="inline-note error">
-              This wallet is not the last player. The funds have been sent to the winner’s EVM
-              address: <ExplorableAddress address={gameState.lastPlayerAddress} />.
+              Only the last person who pressed can claim. Winner wallet:{" "}
+              <ExplorableAddress address={gameState.lastPlayerAddress} />.
             </p>
           ) : gameState?.claimed ? (
             <p className="inline-note">
-              Waiting for payout... The relayer will send USDC to the winner. If it doesn’t arrive
-              in a minute, ensure the relayer is running and refresh your wallet balance.
+              Waiting for payout. A service sends USDC to the winner. If nothing moves after a minute, refresh your
+              balance or check that the relayer is running.
             </p>
           ) : null}
 
           <div className={`status ${actionState.kind}`}>
             <span className="status-label">{actionState.kind.toUpperCase()}</span>
-            <p>{actionState.message}</p>
+            <p className="status-message">{actionState.message}</p>
+            {actionState.steps && actionState.steps.length > 0 ? (
+              <FlowProgress steps={actionState.steps} />
+            ) : null}
             {actionState.txHash ? (
-              <code>
+              <p className="status-tx-link">
                 <a
                   href={evmTxUrl(actionState.txHash)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="explorer-link"
+                  title={actionState.txHash}
                 >
-                  {actionState.txHash}
+                  See it on the explorer
                 </a>
-              </code>
+              </p>
             ) : null}
           </div>
         </section>
+        </div>
+
+        <aside className="network-sidebar" aria-label="Network and live game">
+          <div className="sidebar-sticky">
+            <h2 className="sidebar-heading">Game status & addresses</h2>
+            <p className="sidebar-lead">
+              Pulled from Tezlink and from your wallet on Tezos X EVM. Use it to sanity-check balances and addresses
+              while you click through the demo.
+            </p>
+            <div className="sidebar-toolbar">
+              <span className="chip">
+                Polling about every{" "}
+                {CONFIG.pollIntervalMs >= 1000 ? `${CONFIG.pollIntervalMs / 1000}s` : `${CONFIG.pollIntervalMs}ms`}
+              </span>
+            </div>
+
+            <div className="sidebar-stats">
+              <div className="stat">
+                <span>Tezos X EVM chain ID</span>
+                <strong>{CONFIG.chainId.toString()}</strong>
+              </div>
+              <div className="stat">
+                <span>Pot balance (game)</span>
+                <strong>{gameState ? `${gameState.potDisplay} USDC` : "Loading..."}</strong>
+              </div>
+              <div className="stat">
+                <span>Last player</span>
+                <strong>
+                  {!gameState ? (
+                    "Loading..."
+                  ) : gameState.lastPlayerAddress ? (
+                    <ExplorableAddress address={gameState.lastPlayerAddress} />
+                  ) : gameState.lastPlayerTezos ? (
+                    "Resolving…"
+                  ) : (
+                    "-"
+                  )}
+                </strong>
+              </div>
+              <div className="stat">
+                <span>Session ends</span>
+                <strong>{sessionLabel}</strong>
+              </div>
+              <div className="stat">
+                <span>Claimed this round</span>
+                <strong>{gameState ? (gameState.claimed ? "Yes" : "No") : "Loading..."}</strong>
+              </div>
+              <div className="stat">
+                <span>EVM escrow (pot)</span>
+                <strong>
+                  <ExplorableAddress address={CONFIG.potAddress} />
+                </strong>
+              </div>
+              <div className="stat">
+                <span>Michelson game (KT1)</span>
+                <strong>
+                  <ExplorableAddress address={CONFIG.gameContract} />
+                </strong>
+              </div>
+              <div className="stat">
+                <span>CRAC gateway (EVM)</span>
+                <strong>
+                  <ExplorableAddress address={CONFIG.cracPrecompile} />
+                </strong>
+              </div>
+            </div>
+
+            {gameState ? (
+              <p className="inline-note sidebar-note">
+                Last Tezlink refresh: {new Date(gameState.fetchedAt).toLocaleTimeString()}
+              </p>
+            ) : null}
+            {gameStateError ? <p className="inline-note error">{gameStateError}</p> : null}
+          </div>
+        </aside>
       </main>
     </div>
   );

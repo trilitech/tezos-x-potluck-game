@@ -7,9 +7,123 @@
 }
 
 .app {
-  width: min(1120px, calc(100% - 32px));
+  width: min(1320px, calc(100% - 32px));
   margin: 0 auto;
   padding: 40px 0 64px;
+}
+
+.app-layout {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 28px;
+}
+
+.main-column {
+  flex: 1;
+  min-width: 0;
+}
+
+.network-sidebar {
+  width: min(380px, 100%);
+  flex-shrink: 0;
+}
+
+.sidebar-sticky {
+  position: sticky;
+  top: 20px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  padding: 20px;
+  border: 1px solid #223228;
+  border-radius: 18px;
+  background: rgba(8, 16, 10, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.sidebar-heading {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #e4f4e8;
+}
+
+.sidebar-lead {
+  margin: 0 0 14px;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: #95ab9a;
+}
+
+.sidebar-toolbar {
+  margin-bottom: 14px;
+}
+
+.sidebar-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar-stats .stat {
+  padding: 12px 14px;
+}
+
+.sidebar-stats .stat strong {
+  font-size: 0.92rem;
+}
+
+.sidebar-note {
+  margin-top: 12px;
+  font-size: 0.84rem;
+}
+
+.journey-intro {
+  margin-top: 8px;
+}
+
+.journey-title {
+  margin: 0 0 12px;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #dff5e4;
+}
+
+.journey-lead {
+  margin: 0 0 12px;
+  color: #b5c9b8;
+  font-size: 0.95rem;
+  line-height: 1.65;
+}
+
+.journey-lead strong {
+  color: #e8f8ec;
+  font-weight: 600;
+}
+
+.journey-bullets,
+.journey-mini-steps {
+  margin: 0 0 12px;
+  padding-left: 1.25rem;
+  color: #a7c1ab;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.journey-bullets li,
+.journey-mini-steps li {
+  margin-bottom: 6px;
+}
+
+.journey-mini-steps {
+  list-style: decimal;
+}
+
+.journey-hint {
+  margin: 0;
+  font-size: 0.86rem;
+  color: #8ea391;
+  font-style: italic;
 }
 
 .hero {
@@ -158,6 +272,13 @@
   padding-bottom: 26px;
 }
 
+.action-primary-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
 .action-copy {
   margin: 0 0 18px;
   color: #b5c9b8;
@@ -189,8 +310,23 @@ button:disabled {
   background: linear-gradient(180deg, #245c35, #17311f);
 }
 
+/* Matches .chip.success so Disconnect sits next to Ready with the same pill look */
 .secondary-button {
+  padding: 6px 10px;
+  min-width: unset;
+  border-radius: 999px;
+  border: 1px solid #275534;
   background: transparent;
+  color: #87e3a1;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.secondary-button:hover:not(:disabled) {
+  border-color: #3a7a52;
+  color: #9fe9b8;
 }
 
 .status {
@@ -201,19 +337,132 @@ button:disabled {
   background: rgba(13, 25, 16, 0.95);
 }
 
-.status p {
+.status .status-message {
   margin: 10px 0 0;
   line-height: 1.6;
 }
 
-.status code {
-  display: block;
-  margin-top: 12px;
-  overflow-wrap: anywhere;
-  color: #d6e9da;
-  font-family: "SFMono-Regular", SFMono-Regular, Consolas, "Liberation Mono", Menlo,
-    monospace;
-  font-size: 0.84rem;
+.flow-progress {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.flow-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: #8ea391;
+  animation: flow-step-enter 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--flow-step-index, 0) * 55ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-step {
+    animation: none;
+  }
+}
+
+@keyframes flow-step-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.flow-step-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.flow-step-detail {
+  margin: 6px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #6d8a74;
+  font-weight: 400;
+}
+
+.flow-step--active .flow-step-detail {
+  color: #9ebda8;
+}
+
+.flow-step--done .flow-step-detail {
+  color: #5e8a6a;
+}
+
+.flow-step--done {
+  color: #87e3a1;
+}
+
+.flow-step--active {
+  color: #f0faf2;
+  font-weight: 600;
+}
+
+.flow-step--upcoming {
+  opacity: 0.75;
+}
+
+.flow-step-marker {
+  flex-shrink: 0;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.12rem;
+  border-radius: 50%;
+  border: 2px solid #3d5c47;
+  background: transparent;
+}
+
+.flow-step--done .flow-step-marker {
+  position: relative;
+  border-color: #3d8f5a;
+  background: #3d8f5a;
+}
+
+.flow-step--done .flow-step-marker::after {
+  content: "✓";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -52%);
+  font-size: 0.62rem;
+  font-weight: 800;
+  color: #0f1a12;
+  line-height: 1;
+}
+
+.flow-step--active .flow-step-marker {
+  border-color: #c9e85c;
+  background: rgba(201, 232, 92, 0.15);
+  box-shadow: 0 0 0 3px rgba(201, 232, 92, 0.12);
+  animation: flow-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes flow-pulse {
+  50% {
+    box-shadow: 0 0 0 5px rgba(201, 232, 92, 0.08);
+  }
+}
+
+.flow-step-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.status-tx-link {
+  margin: 12px 0 0;
+  font-size: 0.9rem;
 }
 
 .status-label {
@@ -238,9 +487,25 @@ button:disabled {
   background: rgba(49, 18, 18, 0.95);
 }
 
+@media (max-width: 1024px) {
+  .app-layout {
+    flex-direction: column;
+  }
+
+  .network-sidebar {
+    width: 100%;
+  }
+
+  .sidebar-sticky {
+    position: relative;
+    top: auto;
+    max-height: none;
+  }
+}
+
 @media (max-width: 760px) {
   .app {
-    width: min(100% - 24px, 1120px);
+    width: min(100% - 24px, 1320px);
     padding-top: 24px;
   }
 
