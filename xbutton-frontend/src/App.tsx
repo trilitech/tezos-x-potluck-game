@@ -17,7 +17,7 @@ const cracPrecompile =
 const usdcDecimals = Number(import.meta.env.VITE_USDC_DECIMALS ?? "6");
 const pressAmount = import.meta.env.VITE_PRESS_AMOUNT ?? "1";
 const pollIntervalMs = Number(import.meta.env.VITE_POLL_INTERVAL_MS ?? "5000");
-/** Max time to wait for Tezlink pot to reflect the deposit after EVM confirmation (relayer → CRAC). Default 40s. */
+/** Max time to wait for Michelson-side pot to reflect the deposit after EVM confirmation (relayer → cross-runtime). Default 40s. */
 const gameStateWaitTimeoutMs = (() => {
   const n = Number(import.meta.env.VITE_GAME_STATE_WAIT_TIMEOUT_MS ?? "40000");
   return Number.isFinite(n) && n > 0 ? n : 40000;
@@ -117,16 +117,16 @@ function encodeMichelineInt(value: number): string {
 
 const PRESS_AMOUNT_UNITS = ethers.parseUnits(CONFIG.pressAmount, CONFIG.usdcDecimals);
 
-type TezlinkNode = {
+type GameStorageJsonNode = {
   prim?: string;
-  args?: TezlinkNode[];
+  args?: GameStorageJsonNode[];
   bytes?: string;
   int?: string;
   string?: string;
 };
 
 type GameState = {
-  /** Tezlink identity for the last depositor - matched against Tezos.get_sender on claim. */
+  /** Michelson-side identity for the last depositor - matched against Tezos.get_sender on claim. */
   lastPlayerTezos: string | null;
   /** Raw 20-byte EVM address of the last depositor, stored directly in contract storage. */
   lastPlayerAddress: string | null;
@@ -176,8 +176,8 @@ function pressStepDefs(needsApproval: boolean): FlowStepDef[] {
   return [
     {
       id: "prepare",
-      label: "Load game state from Tezlink",
-      detail: "Loading the latest round from Tezlink so the sidebar matches the chain.",
+      label: "Load game state from the Michelson interface",
+      detail: "Loading the latest round from the Michelson interface so the sidebar matches on-chain state.",
     },
     ...(needsApproval
       ? [
@@ -197,14 +197,14 @@ function pressStepDefs(needsApproval: boolean): FlowStepDef[] {
     },
     {
       id: "evm_confirm",
-      label: "Waiting for Tezos X EVM Confirmation",
+      label: "Waiting for confirmation from the Tezos X EVM network",
       detail: "The network confirms your deposit transaction.",
     },
     {
-      id: "relayer_crac",
-      label: "Relayer is calling the CRAC gateway",
+      id: "relayer_cross_runtime",
+      label: "Relayer is calling the cross-runtime gateway",
       detail:
-        "The relayer is calling the CRAC gateway; Tezlink game state is updating to match your deposit.",
+        "The relayer is calling the cross-runtime gateway; Michelson-side game state is updating to match your deposit.",
     },
   ];
 }
@@ -213,16 +213,18 @@ const CLAIM_STEP_DEFS: FlowStepDef[] = [
   {
     id: "check",
     label: "We're checking that you're the last depositor",
-    detail: "We compare your connected wallet with the last depositor stored on Tezlink. Only that wallet can claim the pot.",
+    detail:
+      "We compare your connected wallet with the last depositor stored in the game contract (Michelson interface). Only that wallet can claim the pot.",
   },
   {
     id: "wallet_claim",
     label: "Confirm the claim in your wallet",
-    detail: "When your wallet opens, approve the claim transaction. CRAC sends that claim from Tezos X EVM to the game on Tezlink.",
+    detail:
+      "When your wallet opens, approve the claim transaction. Cross-runtime execution routes it from the EVM interface to the game contract on the Michelson interface.",
   },
   {
     id: "evm_claim",
-    label: "We're waiting for Tezos X EVM confirmation",
+    label: "Waiting for confirmation from the Tezos X EVM network",
     detail: "After the claim is confirmed, the relayer sees it and pays the winnings from the escrow pot to your wallet in USDC.",
   },
 ];
@@ -234,7 +236,7 @@ const START_SESSION_STEP_DEFS: FlowStepDef[] = [
   },
   {
     id: "evm_start",
-    label: "Waiting for Tezos X EVM Confirmation",
+    label: "Waiting for confirmation from the Tezos X EVM network",
   },
 ];
 
@@ -270,20 +272,20 @@ function JourneyIntro({ phase }: { phase: JourneyPhase }) {
       {phase === "connect" ? (
         <>
           <p className="journey-lead">
-            You use one <strong>Tezos X EVM</strong> wallet. USDC goes into the escrow pot on Tezos X EVM, while the
-            game state is <strong>stored in Tezlink</strong>. <strong>CRAC</strong> and a <strong>relayer</strong> keep
-            Tezlink synced with your deposits, so no second wallet is needed.
+            You use one <strong>Tezos X EVM</strong> wallet. USDC goes into the escrow pot on the <strong>EVM interface</strong>, while
+            game state lives on the <strong>Michelson interface</strong>. <strong>Cross-runtime execution</strong> and a{" "}
+            <strong>relayer</strong> keep the Michelson-side game in sync with your deposits, so no second wallet is needed.
           </p>
           <ul className="journey-bullets">
             <li>
               <strong>Tezos X EVM</strong>: USDC in the pot; deposits and payouts happen here.
             </li>
             <li>
-              <strong>Tezlink</strong>: tracks each 5-minute session. If you are the last depositor when a game session
+              <strong>Michelson interface</strong>: tracks each 5-minute session. If you are the last depositor when a game session
               ends, you win.
             </li>
             <li>
-              <strong>CRAC</strong>: updates Tezlink from Tezos X EVM actions and carries your claim so the relayer can
+              <strong>Cross-runtime execution</strong>: connects EVM actions to the Michelson game and carries your claim so the relayer can
               pay out the pot.
             </li>
           </ul>
@@ -293,14 +295,14 @@ function JourneyIntro({ phase }: { phase: JourneyPhase }) {
         </>
       ) : phase === "network" ? (
         <p className="journey-lead">
-          Please switch to <strong>Tezos X EVM</strong>. This app is wired for that network only, so CRAC can reach
-          the Tezlink game.
+          Please switch to <strong>Tezos X EVM</strong>. This app is wired for that network only, so cross-runtime execution can reach
+          the game on the Michelson interface.
         </p>
       ) : (
         <>
           <p className="journey-lead">
             Connect your wallet on <strong>Tezos X EVM</strong>. Press the Button below to deposit into the escrow pot;{" "}
-            <strong>CRAC</strong> then updates the game state on <strong>Tezlink</strong>.
+            <strong>cross-runtime execution</strong> then updates game state on the <strong>Michelson interface</strong>.
           </p>
           <ol className="journey-mini-steps">
             <li>To play, connect your wallet and click the start new session button.</li>
@@ -335,7 +337,7 @@ function getEthereum(): EthereumProvider | undefined {
 const TEZOS_X_EVM_WALLET_HINT =
   "Your wallet does not look like it is on Tezos X EVM yet. Add or switch to that network, then try again.";
 
-/** Tezos X testnet dashboard (RPC, chain ID, Tezlink, explorers). */
+/** Tezos X testnet dashboard (RPC, chain ID, explorers). */
 const TEZOS_X_TESTNET_DASHBOARD_URL = "https://demo.txpark.nomadic-labs.com/";
 
 function isUserRejectedWalletError(error: unknown): boolean {
@@ -424,7 +426,7 @@ async function sha256Bytes(data: Uint8Array): Promise<Uint8Array> {
 }
 
 /**
- * Convert a 22-byte optimised Tezos address (as returned by Tezlink JSON storage)
+ * Convert a 22-byte optimised Tezos address (as returned by Michelson contract JSON storage)
  * back to a human-readable tz1/tz2/tz3/KT1 Base58Check string.
  */
 async function tezosAddressFromBinary(hexStr: string): Promise<string> {
@@ -453,7 +455,7 @@ async function tezosAddressFromBinary(hexStr: string): Promise<string> {
   return base58Encode(new Uint8Array([...payload, ...checksum]));
 }
 
-function parseGameStorage(storage: TezlinkNode): {
+function parseGameStorage(storage: GameStorageJsonNode): {
   state: Omit<GameState, "lastPlayerTezos" | "lastPlayerAddress">;
   lastPlayerBytes: string | null;
   lastPlayerTezos: string | null;
@@ -477,15 +479,15 @@ function parseGameStorage(storage: TezlinkNode): {
   let lastPlayerBytes: string | null = null;
 
   if (!lastPlayerCell?.prim) {
-    throw new Error("Unexpected Tezlink storage shape for last_player.");
+    throw new Error("Unexpected game contract storage shape for last_player.");
   }
   if (lastPlayerCell.prim === "Some") {
     const arg = lastPlayerCell.args?.[0];
     if (arg?.string) lastPlayerTezos = arg.string;
     else if (arg?.bytes) lastPlayerBytes = arg.bytes;
-    else throw new Error("Unexpected Tezlink storage: Some last_player without address or bytes.");
+    else throw new Error("Unexpected game contract storage: Some last_player without address or bytes.");
   } else if (lastPlayerCell.prim !== "None") {
-    throw new Error("Unexpected Tezlink storage shape for last_player.");
+    throw new Error("Unexpected game contract storage shape for last_player.");
   }
 
   // last_player_evm (raw 20-byte EVM address stored by the relayer)
@@ -502,7 +504,7 @@ function parseGameStorage(storage: TezlinkNode): {
   const payoutCompletedPrim = levelFive?.[1]?.prim;
 
   if (potRaw === undefined || !sessionEndRaw || claimedPrim === undefined) {
-    throw new Error("Unexpected Tezlink storage shape.");
+    throw new Error("Unexpected game contract storage shape.");
   }
 
   return {
@@ -522,12 +524,12 @@ function parseGameStorage(storage: TezlinkNode): {
 
 
 
-/** Fetch Tezlink storage. */
+/** Fetch game contract storage (Michelson interface). */
 async function fetchGameState(): Promise<GameState> {
   const response = await fetch(CONFIG.tezlinkStorageUrl);
-  if (!response.ok) throw new Error(`Tezlink RPC returned ${response.status}.`);
+  if (!response.ok) throw new Error(`Game service returned ${response.status}.`);
 
-  const json = (await response.json()) as TezlinkNode;
+  const json = (await response.json()) as GameStorageJsonNode;
   const { state, lastPlayerTezos: tezosStr, lastPlayerBytes, lastPlayerEvmHex } = parseGameStorage(json);
 
   let lastPlayerTezos = tezosStr;
@@ -633,7 +635,7 @@ function formatPressButtonError(error: unknown): string {
 
   if (e?.message === "GAME_STATE_RELAYER_TIMEOUT") {
     return (
-      "Your deposit went through, but the game view did not update in time. Wait a moment, refresh the page, " +
+      "Your deposit went through, but the Michelson-side game view did not update in time. Wait a moment, refresh the page, " +
       "and check the pot on the right."
     );
   }
@@ -646,7 +648,7 @@ function formatPressButtonError(error: unknown): string {
   return "Something stopped the deposit. Check USDC balance, network, and approval, then try again.";
 }
 
-/** CRAC / gateway calls (claim, start_session) when not already handled by revert branch. */
+/** Cross-runtime gateway calls (claim, start_session) when not already handled by revert branch. */
 function formatGatewayError(error: unknown, kind: "claim" | "start_session"): string {
   const e = error as { code?: string; message?: string; shortMessage?: string };
   const parts = collectErrorText(error);
@@ -973,8 +975,8 @@ function App() {
       const elapsed = Math.floor((Date.now() - t0) / 1000);
       setActionState({
         kind: "pending",
-        message: `Relayer is calling the CRAC gateway and updating Tezlink… (${elapsed}s)`,
-        steps: markFlowSteps(stepDefs, "relayer_crac"),
+        message: `Relayer is calling the cross-runtime gateway and updating the Michelson interface… (${elapsed}s)`,
+        steps: markFlowSteps(stepDefs, "relayer_cross_runtime"),
         txHash: depositTxHash,
       });
     };
@@ -1030,7 +1032,7 @@ function App() {
 
     setActionState({
       kind: "pending",
-      message: "Loading game state from Tezlink…",
+      message: "Loading game state from the Michelson interface…",
       steps: markFlowSteps(depositSteps, "prepare"),
     });
 
@@ -1085,7 +1087,7 @@ function App() {
 
       setActionState({
         kind: "success",
-        message: "Done. Your deposit is in and the game view is updated.",
+        message: "Done. Your deposit is in and the Michelson-side view is updated.",
         txHash: tx.hash,
         steps: completeFlowSteps(depositSteps),
       });
@@ -1281,7 +1283,7 @@ function App() {
           <header className="hero">
             <h1>XButton</h1>
             <p className="hero-copy">
-              The XButton app uses a simple game to show how CRAC (Cross-Runtime Asynchronous Calls) works on Tezos.
+              The XButton app uses a simple game to show cross-runtime execution and native atomic calls on Tezos.
             </p>
           </header>
 
@@ -1462,7 +1464,7 @@ function App() {
           <div className="sidebar-sticky">
             <h2 className="sidebar-heading">Game status & addresses</h2>
             <p className="sidebar-lead">
-              Pulled from Tezlink and from your wallet on Tezos X EVM. Use it to sanity-check balances and addresses
+              Pulled from the Michelson interface (game contract) and from your wallet on the EVM interface (Tezos X EVM). Use it to sanity-check balances and addresses
               while you click through the demo.
             </p>
             <div className="sidebar-toolbar">
@@ -1516,7 +1518,7 @@ function App() {
                 </strong>
               </div>
               <div className="stat">
-                <span>CRAC gateway (EVM)</span>
+                <span>Cross-runtime gateway (EVM)</span>
                 <strong>
                   <ExplorableAddress address={CONFIG.cracPrecompile} />
                 </strong>
@@ -1525,7 +1527,7 @@ function App() {
 
             {gameState ? (
               <p className="inline-note sidebar-note">
-                Last Tezlink refresh: {new Date(gameState.fetchedAt).toLocaleTimeString()}
+                Last Michelson-side refresh: {new Date(gameState.fetchedAt).toLocaleTimeString()}
               </p>
             ) : null}
             {gameStateError ? <p className="inline-note error">{gameStateError}</p> : null}
