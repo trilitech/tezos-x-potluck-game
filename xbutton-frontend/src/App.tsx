@@ -400,6 +400,98 @@ async function sleep(ms: number) {
   await new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function collectErrorText(error: unknown): string {
+  const e = error as {
+    code?: string;
+    message?: string;
+    shortMessage?: string;
+    info?: { error?: { message?: string } };
+  };
+  return [e?.code, e?.message, e?.shortMessage, e?.info?.error?.message]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+/** USDC deposit / approve flow — hides raw CALL_EXCEPTION + estimateGas noise. */
+function formatPressButtonError(error: unknown): string {
+  const e = error as { code?: string; message?: string; shortMessage?: string };
+  const parts = collectErrorText(error);
+
+  if (
+    e?.code === "ACTION_REJECTED" ||
+    parts.includes("user rejected") ||
+    parts.includes("user denied")
+  ) {
+    return "You cancelled the request in your wallet.";
+  }
+
+  if (e?.code === "INSUFFICIENT_FUNDS" || parts.includes("insufficient funds")) {
+    return "Not enough native token to pay network fees. Add gas (e.g. XTZ on this network) and try again.";
+  }
+
+  if (
+    e?.code === "CALL_EXCEPTION" ||
+    parts.includes("call_exception") ||
+    parts.includes("missing revert data") ||
+    parts.includes("estimategas")
+  ) {
+    return (
+      "Couldn’t complete the deposit. This usually means your USDC balance is below 1 USDC, " +
+      "or the wallet couldn’t preview the transfer. Top up USDC, complete the approval if your wallet asks, " +
+      "and confirm you’re on Tezos X EVM with the right USDC and escrow addresses."
+    );
+  }
+
+  if (parts.includes("transfer_from_failed") || parts.includes("transferfrom")) {
+    return "USDC couldn’t be moved to the escrow. Keep at least 1 USDC and approve spending to the escrow when prompted.";
+  }
+
+  if (parts.includes("allowance too low") || parts.includes("allowance")) {
+    return "USDC allowance for the escrow is too low. Approve again when your wallet prompts you.";
+  }
+
+  const short = (e?.shortMessage ?? (error instanceof Error ? error.message : "")).trim();
+  if (short.length > 0 && short.length < 240 && !parts.includes("missing revert data")) {
+    return short;
+  }
+
+  return "Deposit couldn’t finish. Check USDC balance (≥ 1 USDC), approval, and network, then try again.";
+}
+
+/** CRAC / gateway calls (claim, start_session) when not already handled by revert branch. */
+function formatGatewayError(error: unknown, kind: "claim" | "start_session"): string {
+  const e = error as { code?: string; message?: string; shortMessage?: string };
+  const parts = collectErrorText(error);
+
+  if (
+    e?.code === "ACTION_REJECTED" ||
+    parts.includes("user rejected") ||
+    parts.includes("user denied")
+  ) {
+    return kind === "claim"
+      ? "You cancelled the claim in your wallet."
+      : "You cancelled the session transaction in your wallet.";
+  }
+
+  if (e?.code === "INSUFFICIENT_FUNDS" || parts.includes("insufficient funds")) {
+    return "Not enough gas token to send this transaction. Add funds for fees and try again.";
+  }
+
+  if (
+    e?.code === "CALL_EXCEPTION" ||
+    parts.includes("call_exception") ||
+    parts.includes("missing revert data") ||
+    parts.includes("estimategas")
+  ) {
+    return kind === "claim"
+      ? "The claim couldn’t be sent. Check gas balance, Tezos X EVM network, and refresh for the latest game state."
+      : "Couldn’t start a new session. Check gas balance, Tezos X EVM, and try again.";
+  }
+
+  return (e?.shortMessage ?? e?.message ?? (kind === "claim" ? "Claim failed." : "Start session failed.")).trim();
+}
+
 function App() {
   const [walletState, setWalletState] = useState<WalletState>({
     address: null,
@@ -769,8 +861,7 @@ function App() {
         txHash: tx.hash,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Button press failed.";
-      setActionState({ kind: "error", message });
+      setActionState({ kind: "error", message: formatPressButtonError(error) });
     } finally {
       setIsSubmitting(false);
     }
@@ -876,19 +967,17 @@ function App() {
             txHash: payoutHash ?? undefined,
           });
         } else {
-          const hint =
-            err?.message?.includes("NOT_LAST_PLAYER") || err?.shortMessage?.includes("NOT_LAST_PLAYER")
-              ? " On-chain: NOT_LAST_PLAYER — connect the wallet that last deposited."
-              : "";
+          const notLast =
+            err?.message?.includes("NOT_LAST_PLAYER") || err?.shortMessage?.includes("NOT_LAST_PLAYER");
           setActionState({
             kind: "error",
-            message:
-              `The claim failed.${hint} This session may already have been claimed, or the session might still be active. Refresh the page to see the current status.`,
+            message: notLast
+              ? "Only the last depositor can claim. Connect the wallet that most recently pressed the button, or wait until the session ends and roles are clear."
+              : "Claim failed on-chain. The session may still be active, or someone may have claimed already. Refresh the page and check game state.",
           });
         }
       } else {
-        const message = err?.shortMessage ?? err?.message ?? "Claim failed.";
-        setActionState({ kind: "error", message });
+        setActionState({ kind: "error", message: formatGatewayError(error, "claim") });
       }
     } finally {
       setIsClaiming(false);
@@ -935,8 +1024,8 @@ function App() {
       setActionState({
         kind: "error",
         message: isRevert
-          ? "Start session failed. Refresh and try again."
-          : (error instanceof Error ? error.message : "Start session failed."),
+          ? "Couldn’t start a new session on-chain. Refresh the page, confirm you’re on Tezos X EVM, and try again."
+          : formatGatewayError(error, "start_session"),
       });
     } finally {
       setIsStartingSession(false);
