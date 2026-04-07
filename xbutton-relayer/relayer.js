@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { createHash } from 'crypto';
+import http from 'http';
 import { ethers } from 'ethers';
 
 const {
@@ -497,6 +498,30 @@ async function main() {
   console.log('Payout: will call escrow.payout(winner, amount) when claimed=true');
 
   await pollDeposits();
+}
+
+// Render (and similar) free Web Services require binding to process.env.PORT.
+// Local dev: omit PORT to run only the relayer loop with no HTTP server.
+const renderPort = process.env.PORT;
+if (renderPort) {
+  const portNum = Number(renderPort);
+  if (!Number.isFinite(portNum) || portNum <= 0) {
+    console.error('[relayer] Invalid PORT:', renderPort);
+    process.exit(1);
+  }
+  http
+    .createServer((req, res) => {
+      if (req.url === '/' || req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('ok');
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    })
+    .listen(portNum, '0.0.0.0', () => {
+      console.log(`[relayer] Health HTTP on 0.0.0.0:${portNum} (/ and /health → 200)`);
+    });
 }
 
 main().catch(console.error);
