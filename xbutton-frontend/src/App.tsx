@@ -17,10 +17,10 @@ const cracPrecompile =
 const usdcDecimals = Number(import.meta.env.VITE_USDC_DECIMALS ?? "6");
 const pressAmount = import.meta.env.VITE_PRESS_AMOUNT ?? "1";
 const pollIntervalMs = Number(import.meta.env.VITE_POLL_INTERVAL_MS ?? "5000");
-/** Max time to wait for Tezlink pot to reflect the deposit after EVM confirmation (relayer → CRAC). Default 4 min. */
+/** Max time to wait for Tezlink pot to reflect the deposit after EVM confirmation (relayer → CRAC). Default 40s. */
 const gameStateWaitTimeoutMs = (() => {
-  const n = Number(import.meta.env.VITE_GAME_STATE_WAIT_TIMEOUT_MS ?? "240000");
-  return Number.isFinite(n) && n > 0 ? n : 240000;
+  const n = Number(import.meta.env.VITE_GAME_STATE_WAIT_TIMEOUT_MS ?? "40000");
+  return Number.isFinite(n) && n > 0 ? n : 40000;
 })();
 const DEFAULT_TESTNET_FAUCET_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/";
 const faucetUrl =
@@ -627,6 +627,10 @@ function formatPressButtonError(error: unknown): string {
     return "The escrow needs permission to use your USDC. Approve again when your wallet prompts you.";
   }
 
+  if (e?.message === "GAME_SERVICE_UNAVAILABLE") {
+    return "We are unable to reach the game service right now. Check your connection and try again in a few minutes.";
+  }
+
   if (e?.message === "GAME_STATE_RELAYER_TIMEOUT") {
     return (
       "Your deposit went through, but the game view did not update in time. Wait a moment, refresh the page, " +
@@ -985,7 +989,12 @@ function App() {
       const sleepMs = Math.min(CONFIG.pollIntervalMs, deadline - now);
       await sleep(sleepMs);
       updateGameSyncProgress();
-      const nextState = await fetchGameState();
+      let nextState: GameState;
+      try {
+        nextState = await fetchGameState();
+      } catch {
+        throw new Error("GAME_SERVICE_UNAVAILABLE");
+      }
       setGameState(nextState);
       setGameStateError(null);
 
