@@ -11,6 +11,9 @@ instant-confirmations-demo/
 
 tezosx-tezlink/
 
+# Cloned reference (nested git); clone with: git clone git@gitlab.com:tezos-infra/techrel/support-xdev-qa/tezosx-relayer.git tezosx-relayer
+tezosx-relayer/
+
 xbutton-frontend/node_modules/
 xbutton-frontend/dist/
 
