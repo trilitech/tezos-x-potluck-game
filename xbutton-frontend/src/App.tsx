@@ -48,6 +48,9 @@ const CONFIG = {
   gameStateWaitTimeoutMs,
 } as const;
 
+/** Tezos X testnet dashboard (RPC, chain ID, explorers, faucet): https://demo.txpark.nomadic-labs.com/ */
+const TEZOS_X_TESTNET_DASHBOARD_URL = "https://demo.txpark.nomadic-labs.com/";
+
 function evmAddressUrl(address: string) {
   return `${CONFIG.evmExplorerUrl}/address/${address}`;
 }
@@ -296,7 +299,16 @@ function JourneyIntro({ phase }: { phase: JourneyPhase }) {
       ) : phase === "network" ? (
         <p className="journey-lead">
           Please switch to <strong>Tezos X EVM</strong>. This app is wired for that network only, so cross-runtime execution can reach
-          the game on the Michelson interface.
+          the game on the Michelson interface. Add the network in your wallet using the RPC URL and chain ID from the{" "}
+          <a
+            href={TEZOS_X_TESTNET_DASHBOARD_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="explorer-link"
+          >
+            Tezos X testnet dashboard
+          </a>
+          .
         </p>
       ) : (
         <>
@@ -336,9 +348,6 @@ function getEthereum(): EthereumProvider | undefined {
 
 const TEZOS_X_EVM_WALLET_HINT =
   "Your wallet does not look like it is on Tezos X EVM yet. Add or switch to that network, then try again.";
-
-/** Tezos X testnet dashboard (RPC, chain ID, explorers). */
-const TEZOS_X_TESTNET_DASHBOARD_URL = "https://demo.txpark.nomadic-labs.com/";
 
 function isUserRejectedWalletError(error: unknown): boolean {
   const e = error as { code?: number | string };
@@ -1346,6 +1355,19 @@ function App() {
             .
           </p>
 
+          <p className="inline-note tezos-x-dashboard-hint">
+            To connect to <strong>Tezos X EVM</strong>, use the{" "}
+            <a
+              href={TEZOS_X_TESTNET_DASHBOARD_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="explorer-link"
+            >
+              Tezos X testnet dashboard
+            </a>{" "}
+            for the RPC URL, chain ID, explorers, and faucet links for this runtime.
+          </p>
+
           {!hasInjectedWallet ? (
             <p className="inline-note error">No wallet add-on detected. Install something like MetaMask, then reload.</p>
           ) : null}
@@ -1465,7 +1487,16 @@ function App() {
             <h2 className="sidebar-heading">Game status & addresses</h2>
             <p className="sidebar-lead">
               Pulled from the Michelson interface (game contract) and from your wallet on the EVM interface (Tezos X EVM). Use it to sanity-check balances and addresses
-              while you click through the demo.
+              while you click through the demo. Network setup:{" "}
+              <a
+                href={TEZOS_X_TESTNET_DASHBOARD_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="explorer-link"
+              >
+                demo.txpark.nomadic-labs.com
+              </a>
+              .
             </p>
             <div className="sidebar-toolbar">
               <span className="chip">
