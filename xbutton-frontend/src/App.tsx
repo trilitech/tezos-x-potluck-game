@@ -359,10 +359,10 @@ function AirdropModal(props: {
 
   const gotBoth = props.receivedUsdc && props.receivedXtz;
   const heading = gotBoth
-    ? "You've got 5 USDC and 5 XTZ. On us."
+    ? `Boom! We Airdropped you ${AIRDROP_USDC_AMOUNT} USDC and XTZ.`
     : props.receivedUsdc
-      ? "You've got 5 USDC. On us."
-      : "You've got 5 XTZ. On us.";
+      ? `Boom! We Airdropped you ${AIRDROP_USDC_AMOUNT} USDC.`
+      : `Boom! We Airdropped you ${AIRDROP_XTZ_AMOUNT} XTZ.`;
 
   const body = gotBoth
     ? "We airdropped 5 USDC to play with and 5 XTZ for gas into your wallet on the EVM interface of Tezos X. You're ready to play."
@@ -389,14 +389,14 @@ function AirdropModal(props: {
               <div className="airdrop-card">
                 <div className="token"><span className="ic usdc">$</span> USDC</div>
                 <div className="amt">5.00</div>
-                <div className="src">stake currency</div>
+                <div className="src">game token</div>
               </div>
             ) : null}
             {props.receivedXtz ? (
               <div className="airdrop-card">
                 <div className="token"><span className="ic xtz">ꜩ</span> XTZ</div>
                 <div className="amt">5.00</div>
-                <div className="src">gas</div>
+                <div className="src">gas token</div>
               </div>
             ) : null}
           </div>
