@@ -267,9 +267,9 @@ function pressStepDefs(needsApproval: boolean): FlowStepDef[] {
     },
     {
       id: "relayer_cross_runtime",
-      label: "Relayer is calling the NAC gateway on the EVM side",
+      label: "Calling the NAC gateway on the EVM side",
       detail:
-        "The relayer invokes the NAC gateway from the EVM interface so execution reaches Tezlink and updates the Michelson-interface storage with your deposit.",
+        "The NAC gateway is invoked from the EVM interface so execution reaches Tezlink and updates the Michelson-interface storage with your deposit.",
     },
   ];
 }
@@ -1508,7 +1508,7 @@ function App() {
       const elapsed = Math.floor((Date.now() - t0) / 1000);
       setActionState({
         kind: "pending",
-        message: `Relayer is calling the NAC gateway on the EVM side to reach Tezlink and update the Michelson-interface storage with your deposit… (${elapsed}s)`,
+        message: `Calling the NAC gateway on the EVM side to reach Tezlink and update the Michelson-interface storage with your deposit… (${elapsed}s)`,
         steps: markFlowSteps(stepDefs, "relayer_cross_runtime"),
         txHash: depositTxHash,
       });
