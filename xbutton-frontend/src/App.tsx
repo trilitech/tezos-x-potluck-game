@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ethers } from "ethers";
 import "./App.css";
 import "./potzluck.css";
 import { PotzTour } from "./PotzTour";
-import { EventLogStrip, NetworkHelpPotz, PotButton, PotFooter, shortAddr } from "./potzluckUi";
+import {
+  DepositPotCelebration,
+  EventLogStrip,
+  NetworkHelpPotz,
+  PotButton,
+  PotFooter,
+  PotzLuckPotIcon,
+  shortAddr,
+  type EventLogEntry,
+  type EventLogTone,
+} from "./potzluckUi";
 
 const evmRpc = import.meta.env.VITE_EVM_RPC ?? "https://demo.txpark.nomadic-labs.com/rpc";
 const tezlinkRpc = import.meta.env.VITE_TEZLINK_RPC ?? "https://demo.txpark.nomadic-labs.com/rpc/tezlink";
@@ -25,9 +35,21 @@ const gameStateWaitTimeoutMs = (() => {
   const n = Number(import.meta.env.VITE_GAME_STATE_WAIT_TIMEOUT_MS ?? "40000");
   return Number.isFinite(n) && n > 0 ? n : 40000;
 })();
-const DEFAULT_TESTNET_FAUCET_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/";
+const DEFAULT_TESTNET_FAUCET_URL = "https://demo-faucet.txpark.nomadic-labs.com/";
 const faucetUrl =
   import.meta.env.VITE_FAUCET_URL?.trim() || DEFAULT_TESTNET_FAUCET_URL;
+const DEFAULT_AIRDROP_API_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/api/airdrop";
+const airdropApiUrl = import.meta.env.VITE_AIRDROP_API_URL?.trim() || DEFAULT_AIRDROP_API_URL;
+const AIRDROP_USDC_AMOUNT = "5";
+const AIRDROP_XTZ_AMOUNT = "5";
+
+function airdropDeliveredLogMessage(usdc: boolean, xtz: boolean): string {
+  if (usdc && xtz) {
+    return `Airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC and ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
+  }
+  if (usdc) return `Airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC sent to your wallet.`;
+  return `Airdrop complete: ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
+}
 
 const tzktApiUrl = tezlinkRpc.replace(/\/rpc\/tezlink\/?$/, "") + "/tzkt";
 
@@ -53,8 +75,21 @@ const CONFIG = {
 
 /** Tezos X testnet dashboard (RPC, chain ID, explorers, faucet): https://demo.txpark.nomadic-labs.com/ */
 const TEZOS_X_TESTNET_DASHBOARD_URL = "https://demo.txpark.nomadic-labs.com/";
-const POTZ_DOCS_URL =
-  import.meta.env.VITE_DOCS_URL ?? "https://docs.tezos.com/tezos-x/build-your-first-dapp";
+const POTZ_DOCS_URL = import.meta.env.VITE_DOCS_URL ?? "https://tezos.com/tezos-x/";
+const TEZLINK_SITE_URL = import.meta.env.VITE_TEZLINK_SITE_URL ?? "https://tezlink.tezos.com/";
+const NETWORK_INFO = {
+  testnetName: "demo",
+  deployedBy: "foucaultaurelien",
+  created: "2026-04-22 10:19:00 UTC",
+  evmNodeVersion: "649d7e6a",
+  rpcEndpoint: "https://demo.txpark.nomadic-labs.com/rpc",
+  tezlinkEndpoint: "https://demo.txpark.nomadic-labs.com/rpc/tezlink",
+  smartRollupNode: "https://demo.txpark.nomadic-labs.com/rollup",
+  chainId: "127124 (0x1f094)",
+  rollupAddress: "sr1HHiXgJf4WBRBLzQ61ybLDbz5C5p3FeNzA",
+  smartRollupNodeConfig: "https://demo.txpark.nomadic-labs.com/rollup/config",
+  dashboardUrl: "https://demo.txpark.nomadic-labs.com/",
+} as const;
 
 function evmAddressUrl(address: string) {
   return `${CONFIG.evmExplorerUrl}/address/${address}`;
@@ -64,8 +99,9 @@ function evmTokenUrl(address: string) {
   return `${CONFIG.evmExplorerUrl}/token/${address}`;
 }
 
-function evmTxUrl(txHash: string) {
-  return `${CONFIG.evmExplorerUrl}/tx/${txHash}`;
+function evmTxUrl(hash: string) {
+  const h = hash.startsWith("0x") ? hash : `0x${hash}`;
+  return `${CONFIG.evmExplorerUrl}/tx/${h}`;
 }
 
 function tezosContractUrl(address: string) {
@@ -151,6 +187,8 @@ type WalletState = {
   chainId: bigint | null;
   usdcBalance: string | null;
   usdcAllowance: bigint | null;
+  usdcBalanceRaw: bigint | null;
+  xtzBalanceRaw: bigint | null;
 };
 
 type FlowStepStatus = "upcoming" | "active" | "done";
@@ -210,9 +248,9 @@ function pressStepDefs(needsApproval: boolean): FlowStepDef[] {
     },
     {
       id: "relayer_cross_runtime",
-      label: "Relayer is calling the cross-runtime gateway",
+      label: "Relayer is calling the NAC gateway on the EVM side",
       detail:
-        "The relayer is calling the cross-runtime gateway; Michelson-side game state is updating to match your deposit.",
+        "The relayer invokes the NAC gateway from the EVM interface so execution reaches Tezlink and updates the Michelson-interface storage with your deposit.",
     },
   ];
 }
@@ -248,90 +286,110 @@ const START_SESSION_STEP_DEFS: FlowStepDef[] = [
   },
 ];
 
-function FlowProgress({ steps }: { steps: FlowStep[] }) {
+function NetworkInfoModal(props: { open: boolean; onClose: () => void }) {
+  if (!props.open) return null;
+
+  const rows = [
+    ["Testnet Name", NETWORK_INFO.testnetName],
+    ["Created", NETWORK_INFO.created],
+    ["EVM Node Version", NETWORK_INFO.evmNodeVersion],
+    ["RPC Endpoint", NETWORK_INFO.rpcEndpoint],
+    ["Tezlink Endpoint", NETWORK_INFO.tezlinkEndpoint],
+    ["Smart Rollup Node", NETWORK_INFO.smartRollupNode],
+    ["Chain ID", NETWORK_INFO.chainId],
+  ] as const;
+
   return (
-    <ol className="flow-progress" aria-label="Steps">
-      {steps.map((step, idx) => (
-        <li
-          key={step.id}
-          className={`flow-step flow-step--${step.status}`}
-          style={{ "--flow-step-index": idx } as CSSProperties}
-          aria-current={step.status === "active" ? "step" : undefined}
-        >
-          <span className="flow-step-marker" aria-hidden />
-          <div className="flow-step-body">
-            <span className="flow-step-label">{step.label}</span>
-            {step.detail ? <p className="flow-step-detail">{step.detail}</p> : null}
+    <div className="tour-backdrop" onClick={props.onClose}>
+      <div className="tour-card sm network-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="tour-head">
+          <div className="tour-step-pill">
+            <b>Network Details</b>
           </div>
-        </li>
-      ))}
-    </ol>
+          <button type="button" className="tour-close" onClick={props.onClose} aria-label="Close network details">
+            ×
+          </button>
+        </div>
+        <div className="tour-body">
+          <div className="network-info-list">
+            {rows.map(([label, value]) => (
+              <div key={label} className="network-info-row">
+                <div className="network-info-label">{label}</div>
+                <div className="network-info-value">{value}</div>
+              </div>
+            ))}
+          </div>
+          <p className="network-info-link-wrap">
+            <a href={NETWORK_INFO.dashboardUrl} target="_blank" rel="noopener noreferrer" className="explorer-link">
+              Open network site
+            </a>
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 
-type JourneyPhase = "connect" | "network" | "ready";
+function AirdropModal(props: {
+  open: boolean;
+  receivedUsdc: boolean;
+  receivedXtz: boolean;
+  onDismiss: () => void;
+}) {
+  if (!props.open) return null;
 
-function JourneyIntro({ phase }: { phase: JourneyPhase }) {
+  const gotBoth = props.receivedUsdc && props.receivedXtz;
+  const heading = gotBoth
+    ? "You've got 5 USDC and 5 XTZ. On us."
+    : props.receivedUsdc
+      ? "You've got 5 USDC. On us."
+      : "You've got 5 XTZ. On us.";
+
+  const body = gotBoth
+    ? "We airdropped 5 USDC to play with and 5 XTZ for gas into your wallet on the EVM interface of Tezos X. You're ready to play."
+    : props.receivedUsdc
+      ? "We airdropped 5 USDC into your wallet so you can play on Tezos X."
+      : "We airdropped 5 XTZ into your wallet so you have gas to play on Tezos X.";
+
   return (
-    <section className={`panel journey-intro journey-intro--${phase}`} aria-labelledby="journey-heading">
-      <h2 id="journey-heading" className="journey-title">
-        How this demo works
-      </h2>
-      {phase === "connect" ? (
-        <>
-          <p className="journey-lead">
-            You use one <strong>Tezos X EVM</strong> wallet. USDC goes into the escrow pot on the <strong>EVM interface</strong>, while
-            game state lives on the <strong>Michelson interface</strong>. <strong>Cross-runtime execution</strong> and a{" "}
-            <strong>relayer</strong> keep the Michelson-side game in sync with your deposits, so no second wallet is needed.
-          </p>
-          <ul className="journey-bullets">
-            <li>
-              <strong>Tezos X EVM</strong>: USDC in the pot; deposits and payouts happen here.
-            </li>
-            <li>
-              <strong>Michelson interface</strong>: tracks each 5-minute session. If you are the last depositor when a game session
-              ends, you win.
-            </li>
-            <li>
-              <strong>Cross-runtime execution</strong>: connects EVM actions to the Michelson game and carries your claim so the relayer can
-              pay out the pot.
-            </li>
-          </ul>
-          <p className="journey-hint">
-            Sessions last 5 minutes. When one ends, click Start new session to begin another.
-          </p>
-        </>
-      ) : phase === "network" ? (
-        <p className="journey-lead">
-          Please switch to <strong>Tezos X EVM</strong>. This app is wired for that network only, so cross-runtime execution can reach
-          the game on the Michelson interface. Add the network in your wallet using the RPC URL and chain ID from the{" "}
-          <a
-            href={TEZOS_X_TESTNET_DASHBOARD_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="explorer-link"
-          >
-            Tezos X testnet dashboard
-          </a>
-          .
-        </p>
-      ) : (
-        <>
-          <p className="journey-lead">
-            Connect your wallet on <strong>Tezos X EVM</strong>. Press the Button below to deposit into the escrow pot;{" "}
-            <strong>cross-runtime execution</strong> then updates game state on the <strong>Michelson interface</strong>.
-          </p>
-          <ol className="journey-mini-steps">
-            <li>To play, connect your wallet and click the start new session button.</li>
-            <li>Press X button to deposit 1 USDC into the escrow/game pot from your wallet.</li>
-            <li>
-              The last depositor wins when the game session ends and can claim winnings from the pot using the wallet
-              address they deposited with.
-            </li>
-          </ol>
-        </>
-      )}
-    </section>
+    <div className="tour-backdrop" onClick={props.onDismiss}>
+      <div className="tour-card sm" onClick={(e) => e.stopPropagation()}>
+        <div className="tour-head">
+          <div className="tour-step-pill">
+            <span style={{ color: "var(--fg-1)" }}>Welcome aboard</span>
+          </div>
+          <button type="button" className="tour-close" onClick={props.onDismiss} aria-label="Close airdrop modal">
+            ✕
+          </button>
+        </div>
+        <div className="tour-body">
+          <h2 className="tour-h">{heading}</h2>
+          <p className="tour-sub">{body}</p>
+          <div className="airdrop-grid">
+            {props.receivedUsdc ? (
+              <div className="airdrop-card">
+                <div className="token"><span className="ic usdc">$</span> USDC</div>
+                <div className="amt">5.00</div>
+                <div className="src">stake currency</div>
+              </div>
+            ) : null}
+            {props.receivedXtz ? (
+              <div className="airdrop-card">
+                <div className="token"><span className="ic xtz">ꜩ</span> XTZ</div>
+                <div className="amt">5.00</div>
+                <div className="src">gas</div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <div className="tour-foot">
+          <span className="hint">You&apos;ll need 1 USDC per Play.</span>
+          <button type="button" className="btn primary" onClick={props.onDismiss}>
+            Let&apos;s play <span className="kbd">↵</span>
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -593,6 +651,51 @@ async function sleep(ms: number) {
   await new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function formatClockDuration(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function formatEndedAgo(totalSeconds: number): string {
+  if (totalSeconds < 60) return `Ended ${totalSeconds}s ago`;
+  const minutes = Math.floor(totalSeconds / 60);
+  return `Ended ${minutes}m ago`;
+}
+
+async function requestAirdrop(
+  address: string,
+  opts: { usdc: boolean; xtz: boolean },
+): Promise<void> {
+  if (!airdropApiUrl) {
+    throw new Error("AIRDROP_NOT_CONFIGURED");
+  }
+
+  const response = await fetch(airdropApiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      walletAddress: address,
+      usdc: opts.usdc,
+      xtz: opts.xtz,
+      usdcAmount: opts.usdc ? AIRDROP_USDC_AMOUNT : undefined,
+      xtzAmount: opts.xtz ? AIRDROP_XTZ_AMOUNT : undefined,
+    }),
+  });
+
+  if (!response.ok) {
+    let detail = "";
+    try {
+      detail = await response.text();
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail.trim() ? `AIRDROP_FAILED:${detail.trim()}` : `AIRDROP_FAILED:${response.status}`);
+  }
+}
+
 function collectErrorText(error: unknown): string {
   const e = error as {
     code?: string;
@@ -649,7 +752,7 @@ function formatPressButtonError(error: unknown): string {
 
   if (e?.message === "GAME_STATE_RELAYER_TIMEOUT") {
     return (
-      "Your deposit went through, but the Michelson-side game view did not update in time. Wait a moment, refresh the page, " +
+      "Your deposit went through, but the Michelson-interface storage did not update in time. Wait a moment, refresh the page, " +
       "and check the pot on the right."
     );
   }
@@ -695,12 +798,30 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
   return (e?.shortMessage ?? e?.message ?? (kind === "claim" ? "Claim failed." : "Start session failed.")).trim();
 }
 
+function formatAirdropError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith("AIRDROP_FAILED:")) {
+    return message.replace("AIRDROP_FAILED:", "").trim() || "Airdrop failed.";
+  }
+  return "We couldn't airdrop starter funds right now. Please try again in a moment.";
+}
+
+function PotzLuckMark() {
+  return (
+    <>
+      Po<span className="brand-name-tz">tz</span>Luck
+    </>
+  );
+}
+
 function App() {
   const [walletState, setWalletState] = useState<WalletState>({
     address: null,
     chainId: null,
     usdcBalance: null,
     usdcAllowance: null,
+    usdcBalanceRaw: null,
+    xtzBalanceRaw: null,
   });
   const [isWalletDisconnected, setIsWalletDisconnected] = useState(false);
   const [gameState, setGameState] = useState<GameState | null>(null);
@@ -710,7 +831,6 @@ function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
   const [isStartingSession, setIsStartingSession] = useState(false);
-  const [payoutTxHash, setPayoutTxHash] = useState<string | null>(null);
   const [actionState, setActionState] = useState<ActionState>({
     kind: "idle",
     message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
@@ -721,21 +841,32 @@ function App() {
   const [tourStep, setTourStep] = useState(0);
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
   const walletMenuRef = useRef<HTMLDivElement>(null);
+  const [networkInfoOpen, setNetworkInfoOpen] = useState(false);
+  const [airdropModalState, setAirdropModalState] = useState<{ open: boolean; usdc: boolean; xtz: boolean }>({
+    open: false,
+    usdc: false,
+    xtz: false,
+  });
+  const [depositFxId, setDepositFxId] = useState(0);
   const eventLogId = useRef(0);
-  const [eventLog, setEventLog] = useState<{ id: number; msg: string }[]>([]);
-  const pushEventLog = useCallback((msg: string) => {
+  const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
+  const pushEventLog = useCallback((msg: string, tone: EventLogTone = "info", txHash?: string) => {
     eventLogId.current += 1;
-    setEventLog((prev) => [...prev.slice(-19), { id: eventLogId.current, msg }]);
+    setEventLog((prev) => [...prev.slice(-19), { id: eventLogId.current, msg, tone, ...(txHash ? { txHash } : {}) }]);
+  }, []);
+
+  const dismissAirdropModal = useCallback(() => {
+    setAirdropModalState({ open: false, usdc: false, xtz: false });
+  }, []);
+
+  const dismissDepositFx = useCallback(() => {
+    setDepositFxId(0);
   }, []);
 
   const hasInjectedWallet = typeof window !== "undefined" && Boolean(getEthereum());
   const onExpectedNetwork = walletState.chainId === CONFIG.chainId;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const sessionActive = gameState ? gameState.sessionEnd > nowSeconds : true;
-  const needsApproval =
-    walletState.address &&
-    walletState.usdcAllowance !== null &&
-    walletState.usdcAllowance < PRESS_AMOUNT_UNITS;
   const canPressButton =
     hasInjectedWallet &&
     Boolean(walletState.address) &&
@@ -743,28 +874,6 @@ function App() {
     !isSubmitting &&
     sessionActive &&
     !gameState?.claimed;
-
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    console.log("[xbutton deposit-prep]", {
-      usdc: CONFIG.usdcAddress,
-      pot: CONFIG.potAddress,
-      wallet: walletState.address,
-      usdcAllowance: walletState.usdcAllowance?.toString() ?? null,
-      pressAmountUnits: PRESS_AMOUNT_UNITS.toString(),
-      needsApproval,
-      onExpectedNetwork,
-      sessionActive,
-      gameClaimed: gameState?.claimed ?? null,
-    });
-  }, [
-    walletState.address,
-    walletState.usdcAllowance,
-    needsApproval,
-    onExpectedNetwork,
-    sessionActive,
-    gameState?.claimed,
-  ]);
 
   const canClaim =
     hasInjectedWallet &&
@@ -789,7 +898,6 @@ function App() {
     if (!walletState.address) return "connect";
     if (!onExpectedNetwork) return "wrong-net";
     if (isSubmitting || isClaiming || isStartingSession) return "depositing";
-    if (canClaim) return "won";
     if (sessionActive && gameState && !gameState.claimed) return "play";
     return "idle";
   }, [
@@ -798,17 +906,16 @@ function App() {
     isSubmitting,
     isClaiming,
     isStartingSession,
-    canClaim,
     sessionActive,
     gameState,
   ]);
 
   const [ringTick, setRingTick] = useState(0);
   useEffect(() => {
-    if (shellView !== "game" || !sessionActive) return;
+    if (shellView !== "game" || !gameState) return;
     const id = window.setInterval(() => setRingTick((t) => t + 1), 1000);
     return () => clearInterval(id);
-  }, [shellView, sessionActive]);
+  }, [shellView, gameState]);
 
   const potRingProgress = useMemo(() => {
     if (!sessionActive || !gameState || gameState.sessionEnd <= Math.floor(Date.now() / 1000)) {
@@ -822,22 +929,26 @@ function App() {
 
   const sessionLabel = useMemo(() => {
     if (!gameState) return "Loading...";
-    return new Date(gameState.sessionEnd * 1000).toLocaleString();
-  }, [gameState]);
-
-  const journeyPhase = useMemo((): JourneyPhase => {
-    if (!walletState.address) return "connect";
-    if (!onExpectedNetwork) return "network";
-    return "ready";
-  }, [walletState.address, onExpectedNetwork]);
+    void ringTick;
+    const now = Math.floor(Date.now() / 1000);
+    const delta = gameState.sessionEnd - now;
+    if (delta > 0) {
+      return `Ends in ${formatClockDuration(delta)}`;
+    }
+    return formatEndedAgo(Math.abs(delta));
+  }, [gameState, ringTick]);
 
   const lastEventLogKey = useRef("");
   useEffect(() => {
-    if (actionState.kind !== "success" && actionState.kind !== "error") return;
+    if (actionState.kind === "idle") return;
     const key = `${actionState.kind}:${actionState.message}:${actionState.txHash ?? ""}`;
     if (key === lastEventLogKey.current) return;
     lastEventLogKey.current = key;
-    pushEventLog(actionState.message);
+    pushEventLog(
+      actionState.message,
+      actionState.kind === "success" ? "success" : actionState.kind === "error" ? "error" : "info",
+      actionState.txHash,
+    );
   }, [actionState.kind, actionState.message, actionState.txHash, pushEventLog]);
 
   useEffect(() => {
@@ -863,15 +974,31 @@ function App() {
 
   const refreshWalletState = useCallback(async (requestAccounts = false) => {
     if (isWalletDisconnected && !requestAccounts) {
-      setWalletState({ address: null, chainId: null, usdcBalance: null, usdcAllowance: null });
-      return;
+      const emptyState = {
+        address: null,
+        chainId: null,
+        usdcBalance: null,
+        usdcAllowance: null,
+        usdcBalanceRaw: null,
+        xtzBalanceRaw: null,
+      } satisfies WalletState;
+      setWalletState(emptyState);
+      return emptyState;
     }
 
     const ethereum = getEthereum();
     if (!ethereum) {
-      setWalletState({ address: null, chainId: null, usdcBalance: null, usdcAllowance: null });
+      const emptyState = {
+        address: null,
+        chainId: null,
+        usdcBalance: null,
+        usdcAllowance: null,
+        usdcBalanceRaw: null,
+        xtzBalanceRaw: null,
+      } satisfies WalletState;
+      setWalletState(emptyState);
       setWalletError(null);
-      return;
+      return emptyState;
     }
 
     try {
@@ -882,38 +1009,54 @@ function App() {
       )) as string[];
 
       if (accounts.length === 0) {
-        setWalletState({ address: null, chainId: null, usdcBalance: null, usdcAllowance: null });
+        const emptyState = {
+          address: null,
+          chainId: null,
+          usdcBalance: null,
+          usdcAllowance: null,
+          usdcBalanceRaw: null,
+          xtzBalanceRaw: null,
+        } satisfies WalletState;
+        setWalletState(emptyState);
         setWalletError(null);
-        return;
+        return emptyState;
       }
 
       const address = ethers.getAddress(accounts[0]);
       const network = await provider.getNetwork();
 
       if (network.chainId !== CONFIG.chainId) {
-        setWalletState({
+        const nextState = {
           address,
           chainId: network.chainId,
           usdcBalance: null,
           usdcAllowance: null,
-        });
+          usdcBalanceRaw: null,
+          xtzBalanceRaw: null,
+        } satisfies WalletState;
+        setWalletState(nextState);
         setWalletError(TEZOS_X_EVM_WALLET_HINT);
-        return;
+        return nextState;
       }
 
       const usdc = new ethers.Contract(CONFIG.usdcAddress, ERC20_ABI, provider);
       try {
-        const [balance, allowance] = await Promise.all([
+        const [xtzBalance, balance, allowance] = await Promise.all([
+          provider.getBalance(address),
           usdc.balanceOf(address) as Promise<bigint>,
           usdc.allowance(address, CONFIG.potAddress) as Promise<bigint>,
         ]);
-        setWalletState({
+        const nextState = {
           address,
           chainId: network.chainId,
           usdcBalance: formatTokenAmount(balance, CONFIG.usdcDecimals),
           usdcAllowance: allowance,
-        });
+          usdcBalanceRaw: balance,
+          xtzBalanceRaw: xtzBalance,
+        } satisfies WalletState;
+        setWalletState(nextState);
         setWalletError(null);
+        return nextState;
       } catch (contractErr) {
         if (isBadContractRpcResultError(contractErr)) {
           setWalletError(TEZOS_X_EVM_WALLET_HINT);
@@ -922,12 +1065,16 @@ function App() {
             contractErr instanceof Error ? contractErr.message : "Failed to load USDC balance.",
           );
         }
-        setWalletState({
+        const nextState = {
           address,
           chainId: network.chainId,
           usdcBalance: null,
           usdcAllowance: null,
-        });
+          usdcBalanceRaw: null,
+          xtzBalanceRaw: null,
+        } satisfies WalletState;
+        setWalletState(nextState);
+        return nextState;
       }
     } catch (error) {
       if (isUserRejectedWalletError(error)) {
@@ -937,7 +1084,16 @@ function App() {
       } else {
         setWalletError(error instanceof Error ? error.message : "Failed to connect wallet.");
       }
-      setWalletState({ address: null, chainId: null, usdcBalance: null, usdcAllowance: null });
+      const emptyState = {
+        address: null,
+        chainId: null,
+        usdcBalance: null,
+        usdcAllowance: null,
+        usdcBalanceRaw: null,
+        xtzBalanceRaw: null,
+      } satisfies WalletState;
+      setWalletState(emptyState);
+      return emptyState;
     }
   }, [isWalletDisconnected]);
 
@@ -954,28 +1110,75 @@ function App() {
     }
   }, []);
 
-  // When payout completes (on load or after relayer syncs), fetch the payout tx hash and update UI.
+  /** Poll until Michelson-interface storage shows an active, unclaimed round (e.g. after start_session confirms on EVM). */
+  const waitForActiveRound = useCallback(
+    async (timeoutMs = CONFIG.gameStateWaitTimeoutMs) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const s = await refreshGameState();
+        if (s) {
+          const nowSec = Math.floor(Date.now() / 1000);
+          if (s.sessionEnd > nowSec && !s.claimed) {
+            return s;
+          }
+        }
+        await sleep(Math.min(CONFIG.pollIntervalMs, Math.max(0, deadline - Date.now())));
+      }
+      return null;
+    },
+    [refreshGameState],
+  );
+
+  // When payout completes (after claim + relayer), refresh status text and event log; attach payout tx when found.
   useEffect(() => {
-    if (!gameState?.payoutCompleted) {
-      setPayoutTxHash(null);
+    if (!gameState?.payoutCompleted || !gameState?.claimed) {
       return;
     }
-    setActionState((prev) =>
-      prev.message.toLowerCase().includes("waiting for payout")
-        ? { kind: "success", message: "Payout complete. The winner has been paid." }
-        : prev
-    );
-    void fetchPayoutTxHash(gameState.lastPlayerAddress ?? null).then((txHash) => {
-      if (txHash) {
-        setPayoutTxHash(txHash);
-        setActionState((prev) =>
-          prev.message.toLowerCase().includes("payout complete")
-            ? { kind: "success", message: "Payout complete. The winner has been paid.", txHash }
-            : prev
-        );
+
+    let cancelled = false;
+    const winner = gameState.lastPlayerAddress ?? walletState.address ?? null;
+
+    void (async () => {
+      let payoutHash: string | null = null;
+      try {
+        payoutHash = await fetchPayoutTxHash(winner);
+      } catch {
+        /* non-fatal */
       }
-    });
-  }, [gameState?.payoutCompleted, gameState?.lastPlayerAddress, gameState?.potRaw]);
+      if (cancelled) return;
+
+      setActionState((prev) => {
+        if (prev.message.toLowerCase().includes("payout complete")) {
+          return prev;
+        }
+        const m = prev.message.toLowerCase();
+        const inClaimPayoutFlow =
+          m.includes("waiting for payout") ||
+          m.includes("claim submitted") ||
+          m.includes("pay out the winner") ||
+          m.includes("claim transaction is confirmed");
+        if (!inClaimPayoutFlow) {
+          return prev;
+        }
+        return {
+          kind: "success" as const,
+          message:
+            "Payout complete. The relayer finished paying the winner; their USDC balance should update shortly.",
+          ...(payoutHash ? { txHash: payoutHash } : {}),
+        };
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    gameState?.payoutCompleted,
+    gameState?.claimed,
+    gameState?.lastPlayerAddress,
+    gameState?.potRaw,
+    walletState.address,
+  ]);
 
   useEffect(() => {
     void refreshWalletState(false);
@@ -1014,8 +1217,101 @@ function App() {
     setWalletError(null);
     setIsConnecting(true);
     setIsWalletDisconnected(false);
+    setActionState({
+      kind: "pending",
+      message: "Connecting your wallet and checking your Tezos X balances…",
+    });
+    let willAirdrop = false;
+    let needsUsdcAirdrop = false;
+    let needsXtzAirdrop = false;
     try {
-      await refreshWalletState(true);
+      const connectedWallet = await refreshWalletState(true);
+      if (!connectedWallet?.address) {
+        setActionState({
+          kind: "idle",
+          message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
+        });
+        return;
+      }
+
+      if (connectedWallet.chainId !== CONFIG.chainId) {
+        setActionState({
+          kind: "error",
+          message: TEZOS_X_EVM_WALLET_HINT,
+        });
+        return;
+      }
+
+      needsUsdcAirdrop =
+        connectedWallet.usdcBalanceRaw == null || connectedWallet.usdcBalanceRaw === 0n;
+      needsXtzAirdrop =
+        connectedWallet.xtzBalanceRaw == null || connectedWallet.xtzBalanceRaw === 0n;
+      willAirdrop = needsUsdcAirdrop || needsXtzAirdrop;
+
+      if (willAirdrop) {
+        setActionState({
+          kind: "pending",
+          message: "Your wallet is low on starter funds, so we're preparing an airdrop…",
+        });
+        await requestAirdrop(connectedWallet.address, {
+          xtz: needsXtzAirdrop,
+          usdc: needsUsdcAirdrop,
+        });
+        await refreshWalletState(false);
+        pushEventLog(airdropDeliveredLogMessage(needsUsdcAirdrop, needsXtzAirdrop), "success");
+      }
+
+      pushEventLog(
+        "You're on Tezos X with funds to play — opening a round (if needed) and depositing 1 USDC into the pot.",
+        "info",
+      );
+
+      let latestGameState = await refreshGameState();
+      if (!latestGameState) {
+        setActionState({
+          kind: "error",
+          message: "Could not load game state. Refresh and try again.",
+        });
+        return;
+      }
+
+      const nowSec = Math.floor(Date.now() / 1000);
+      const hasActiveSession = latestGameState.sessionEnd > nowSec && !latestGameState.claimed;
+
+      if (!hasActiveSession) {
+        setActionState({
+          kind: "pending",
+          message: "No active session is running, so we're opening a fresh round for you…",
+        });
+        const started = await startNewSession();
+        if (!started) return;
+        const active = await waitForActiveRound();
+        if (!active) {
+          setActionState({
+            kind: "error",
+            message:
+              "New session was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
+          });
+          return;
+        }
+        latestGameState = active;
+      }
+
+      await pressButton();
+
+      if (willAirdrop) {
+        setAirdropModalState({
+          open: true,
+          xtz: needsXtzAirdrop,
+          usdc: needsUsdcAirdrop,
+        });
+      }
+    } catch (error) {
+      if (error instanceof Error && (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))) {
+        setActionState({ kind: "error", message: formatAirdropError(error) });
+      } else {
+        throw error;
+      }
     } finally {
       setIsConnecting(false);
     }
@@ -1035,7 +1331,14 @@ function App() {
     }
     setIsWalletDisconnected(true);
     setWalletError(null);
-    setWalletState({ address: null, chainId: null, usdcBalance: null, usdcAllowance: null });
+    setWalletState({
+      address: null,
+      chainId: null,
+      usdcBalance: null,
+      usdcAllowance: null,
+      usdcBalanceRaw: null,
+      xtzBalanceRaw: null,
+    });
     setActionState({
       kind: "idle",
       message: "Wallet disconnected. Connect again to keep going.",
@@ -1090,7 +1393,7 @@ function App() {
       const elapsed = Math.floor((Date.now() - t0) / 1000);
       setActionState({
         kind: "pending",
-        message: `Relayer is calling the cross-runtime gateway and updating the Michelson interface… (${elapsed}s)`,
+        message: `Relayer is calling the NAC gateway on the EVM side to reach Tezlink and update the Michelson-interface storage with your deposit… (${elapsed}s)`,
         steps: markFlowSteps(stepDefs, "relayer_cross_runtime"),
         txHash: depositTxHash,
       });
@@ -1131,18 +1434,22 @@ function App() {
       return;
     }
 
-    if (!walletState.address) {
+    // Read balances/address from the wallet RPC, not from React state: connectWallet can call this
+    // immediately after refreshWalletState(), before a re-render commits walletState.
+    const latestWallet = await refreshWalletState(false);
+    if (!latestWallet.address) {
       setActionState({ kind: "error", message: "Connect your wallet before pressing the button." });
       return;
     }
 
-    if (!onExpectedNetwork) {
+    if (latestWallet.chainId !== CONFIG.chainId) {
       setActionState({ kind: "error", message: "Switch your wallet to TezosX EVM first." });
       return;
     }
 
     setIsSubmitting(true);
-    const approvalNeeded = Boolean(needsApproval);
+    const approvalNeeded =
+      latestWallet.usdcAllowance !== null && latestWallet.usdcAllowance < PRESS_AMOUNT_UNITS;
     const depositSteps = pressStepDefs(approvalNeeded);
 
     setActionState({
@@ -1154,8 +1461,7 @@ function App() {
     try {
       const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
-      const currentState = gameState ?? (await fetchGameState());
-
+      const currentState = await refreshGameState();
       if (!currentState) {
         throw new Error("Could not load game data. Refresh and try again.");
       }
@@ -1176,6 +1482,12 @@ function App() {
         });
         const usdc = new ethers.Contract(CONFIG.usdcAddress, ERC20_ABI, signer);
         const approveTx = await usdc.approve(CONFIG.potAddress, PRESS_AMOUNT_UNITS);
+        setActionState({
+          kind: "pending",
+          message: "Waiting for your approval transaction to confirm on Tezos X EVM…",
+          steps: markFlowSteps(depositSteps, "approve"),
+          txHash: approveTx.hash,
+        });
         await approveTx.wait();
         await refreshWalletState(false);
       }
@@ -1190,7 +1502,7 @@ function App() {
       const tx = await escrow.deposit(PRESS_AMOUNT_UNITS);
       setActionState({
         kind: "pending",
-        message: "Waiting for confirmation…",
+        message: "Waiting for your deposit transaction to confirm on Tezos X EVM…",
         steps: markFlowSteps(depositSteps, "evm_confirm"),
         txHash: tx.hash,
       });
@@ -1200,9 +1512,10 @@ function App() {
       await waitForGameStateUpdate(currentState, depositSteps, tx.hash);
       await refreshWalletState(false);
 
+      setDepositFxId((id) => id + 1);
       setActionState({
         kind: "success",
-        message: "Done. Your deposit is in and the Michelson-side view is updated.",
+        message: "Done. Your deposit is in and the Michelson-interface storage is updated.",
         txHash: tx.hash,
         steps: completeFlowSteps(depositSteps),
       });
@@ -1244,7 +1557,7 @@ function App() {
         setActionState({
           kind: "success",
           message: payoutHash
-            ? "Winnings have already been claimed. Payout transfer below."
+            ? "Winnings have already been claimed. Payout transaction below."
             : "Winnings have already been claimed.",
           txHash: payoutHash ?? undefined,
         });
@@ -1284,7 +1597,7 @@ function App() {
 
       setActionState({
         kind: "pending",
-        message: "Waiting for confirmation…",
+        message: "Waiting for your claim transaction to confirm on Tezos X EVM…",
         steps: markFlowSteps(CLAIM_STEP_DEFS, "evm_claim"),
         txHash: tx.hash,
       });
@@ -1294,7 +1607,18 @@ function App() {
 
       setActionState({
         kind: "success",
-        message: "Claim submitted. USDC goes to the winner next.",
+        message: "Your claim transaction is confirmed on Tezos X EVM.",
+        txHash: tx.hash,
+        steps: completeFlowSteps(CLAIM_STEP_DEFS),
+      });
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+
+      setActionState({
+        kind: "pending",
+        message: "A small relayer is calling the NAC gateway to pay out the winner…",
         txHash: tx.hash,
         steps: completeFlowSteps(CLAIM_STEP_DEFS),
       });
@@ -1316,7 +1640,7 @@ function App() {
             kind: "success",
             message:
               "Already claimed. Winnings went to the last player."
-              + (payoutHash ? " Payout transaction below." : ""),
+              + (payoutHash ? " See payout transaction below." : ""),
             txHash: payoutHash ?? undefined,
           });
         } else {
@@ -1326,7 +1650,7 @@ function App() {
             kind: "error",
             message: notLast
               ? "Only the wallet that pressed last can claim. Switch wallet or wait until the round ends."
-              : "Claim failed. Refresh the page and read the game state on the right.",
+              : "Claim failed. Refresh the page and try again.",
           });
         }
       } else {
@@ -1339,9 +1663,9 @@ function App() {
 
   async function startNewSession() {
     const ethereum = getEthereum();
-    if (!ethereum || !walletState.address || !onExpectedNetwork) {
+    if (!ethereum) {
       setActionState({ kind: "error", message: "Connect your wallet and switch to TezosX EVM." });
-      return;
+      return false;
     }
     setIsStartingSession(true);
     setActionState({
@@ -1351,6 +1675,12 @@ function App() {
     });
     try {
       const provider = new ethers.BrowserProvider(ethereum);
+      const accounts = (await provider.send("eth_accounts", [])) as string[];
+      const network = await provider.getNetwork();
+      if (accounts.length === 0 || network.chainId !== CONFIG.chainId) {
+        setActionState({ kind: "error", message: "Connect your wallet and switch to TezosX EVM." });
+        return false;
+      }
       const signer = await provider.getSigner();
       const gateway = new ethers.Contract(CONFIG.cracPrecompile, GATEWAY_ABI, signer);
       const durationBytes = encodeMichelineInt(DEFAULT_SESSION_DURATION_SEC);
@@ -1362,7 +1692,7 @@ function App() {
       );
       setActionState({
         kind: "pending",
-        message: "Waiting for confirmation…",
+        message: "Waiting for your session transaction to confirm on Tezos X EVM…",
         steps: markFlowSteps(START_SESSION_STEP_DEFS, "evm_start"),
         txHash: tx.hash,
       });
@@ -1370,10 +1700,11 @@ function App() {
       await refreshGameState();
       setActionState({
         kind: "success",
-        message: `New session started (${DEFAULT_SESSION_DURATION_SEC / 60} min). Press the X button to play.`,
+        message: `New session started (${DEFAULT_SESSION_DURATION_SEC / 60} min). Click Play to deposit ${CONFIG.pressAmount} USDC into the pot.`,
         txHash: tx.hash,
         steps: completeFlowSteps(START_SESSION_STEP_DEFS),
       });
+      return true;
     } catch (error) {
       const err = error as { code?: string; message?: string; shortMessage?: string };
       const isRevert =
@@ -1386,6 +1717,7 @@ function App() {
           ? "Could not start a new session. Refresh, check you are on Tezos X EVM, and try again."
           : formatGatewayError(error, "start_session"),
       });
+      return false;
     } finally {
       setIsStartingSession(false);
     }
@@ -1404,6 +1736,17 @@ function App() {
       /* ignore */
     }
     setShellView("game");
+  }, []);
+
+  const goToLanding = useCallback(() => {
+    try {
+      sessionStorage.removeItem("potzluck_skip_landing");
+    } catch {
+      /* ignore */
+    }
+    setWalletMenuOpen(false);
+    setTourOpen(false);
+    setShellView("landing");
   }, []);
 
   const openTourFromGame = useCallback(() => {
@@ -1429,18 +1772,40 @@ function App() {
       await switchNetwork();
       return;
     }
-    if (potUiState === "won") {
-      await claimContract();
-      return;
-    }
     if (potUiState === "idle") {
-      await startNewSession();
+      const started = await startNewSession();
+      if (!started) return;
+      const active = await waitForActiveRound();
+      if (active) {
+        await pressButton();
+      } else {
+        setActionState({
+          kind: "error",
+          message:
+            "New session was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
+        });
+      }
       return;
     }
     if (potUiState === "play") {
       await pressButton();
+      return;
     }
-  }, [potUiState, connectWallet, switchNetwork, claimContract, startNewSession, pressButton]);
+    if (potUiState === "won") {
+      const started = await startNewSession();
+      if (!started) return;
+      const active = await waitForActiveRound();
+      if (active) {
+        await pressButton();
+      } else {
+        setActionState({
+          kind: "error",
+          message:
+            "New session was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
+        });
+      }
+    }
+  }, [potUiState, connectWallet, switchNetwork, startNewSession, pressButton, waitForActiveRound]);
 
   const potCopy = useMemo(() => {
     switch (potUiState) {
@@ -1449,13 +1814,13 @@ function App() {
       case "wrong-net":
         return { label: "Add Tezos X", sub: "network" };
       case "idle":
-        return { label: "Play", sub: "start a new session" };
+        return { label: "Play", sub: null };
       case "play":
-        return { label: "Press", sub: `${CONFIG.pressAmount} USDC` };
+        return { label: "Play", sub: `${CONFIG.pressAmount} USDC` };
       case "depositing":
         return { label: "…", sub: "working" };
       case "won":
-        return { label: "Claim", sub: "winnings" };
+        return { label: "Play", sub: null };
     }
   }, [potUiState, CONFIG.pressAmount]);
 
@@ -1470,6 +1835,12 @@ function App() {
     return shortAddr(gameState.lastPlayerAddress);
   }, [gameState?.lastPlayerAddress, gameState?.lastPlayerTezos]);
 
+  const hasGameStatus =
+    !hasInjectedWallet ||
+    Boolean(walletError) ||
+    Boolean(gameStateError) ||
+    Boolean(gameState?.claimed && !gameState?.payoutCompleted);
+
   if (shellView === "landing") {
     return (
       <>
@@ -1478,8 +1849,15 @@ function App() {
         <div className="pl-shell">
           <header className="pl-topbar">
             <div className="brand">
-              <div className="brand-mark">P</div>
-              <span className="brand-name">PotzLuck</span>
+              <div className="brand-mark brand-mark-pot" aria-hidden>
+                <PotzLuckPotIcon />
+              </div>
+              <div className="brand-lockup">
+                <span className="brand-name">
+                  <PotzLuckMark />
+                </span>
+                <span className="brand-sub">on Tezos X</span>
+              </div>
             </div>
             <div className="topbar-right">
               <a
@@ -1493,44 +1871,34 @@ function App() {
             </div>
           </header>
           <main className="pl-landing">
-            <h1 className="landing-h">
-              Discover <span className="hl">Native Atomic Composability</span> on Tezos X
-              <span className="landing-sub-h"> by playing PotzLuck.</span>
-            </h1>
-            <div className="landing-cta">
-              <div className="cta-col">
-                <div className="cta-eyebrow">Already know NAC on Tezos X?</div>
+            <section className="landing-copy">
+              <h1 className="landing-h">
+                Native Atomic Composability
+                <span className="landing-sub-h">comes to Tezos X.</span>
+              </h1>
+              <p className="landing-blurb">
+                <PotzLuckMark /> is a simple game that helps you understand the power of NAC on Tezos X. You deposit
+                into a pot on the EVM interface and watch game state update on the Tezlink interface without switching
+                context. The last player to deposit when the game ends wins.
+              </p>
+              <div className="landing-cta">
                 <button type="button" className="btn primary lg" onClick={skipLandingToGame}>
                   Play Game
                 </button>
-              </div>
-              <div className="cta-divider">
-                <span>or</span>
-              </div>
-              <div className="cta-col">
-                <div className="cta-eyebrow">Learn about NAC on Tezos X before you play</div>
                 <button type="button" className="btn ghost lg" onClick={startTourFromLanding}>
                   Take the Tour
                 </button>
               </div>
-            </div>
-            <div className="landing-meta">
-              <span className="meta-pill">
-                <span className="d evm" /> Etherlink
-              </span>
-              <span className="meta-sep">+</span>
-              <span className="meta-pill subtle">
-                <span className="d tez" /> Tezlink
-              </span>
-            </div>
+            </section>
           </main>
           <PotFooter
             faucetUrl={faucetUrl}
-            dashboardUrl={TEZOS_X_TESTNET_DASHBOARD_URL}
             docsUrl={POTZ_DOCS_URL}
-            gameExplorerUrl={tezosContractUrl(CONFIG.gameContract)}
+            tezlinkUrl={TEZLINK_SITE_URL}
+            onOpenNetworkInfo={() => setNetworkInfoOpen(true)}
           />
         </div>
+        <NetworkInfoModal open={networkInfoOpen} onClose={() => setNetworkInfoOpen(false)} />
         <PotzTour
           open={tourOpen}
           stepIdx={tourStep}
@@ -1538,6 +1906,12 @@ function App() {
           onBack={tourBack}
           onClose={tourClose}
           onEndGoToGame={tourEnd}
+        />
+        <AirdropModal
+          open={airdropModalState.open}
+          receivedUsdc={airdropModalState.usdc}
+          receivedXtz={airdropModalState.xtz}
+          onDismiss={dismissAirdropModal}
         />
       </>
     );
@@ -1549,19 +1923,18 @@ function App() {
       <div className="bg-glow" />
       <div className="pl-shell">
         <header className="pl-topbar">
-          <div className="brand">
-            <div className="brand-mark">P</div>
-            <span className="brand-name">PotzLuck</span>
-          </div>
+          <button type="button" className="brand brand-button" onClick={goToLanding}>
+            <div className="brand-mark brand-mark-pot" aria-hidden>
+              <PotzLuckPotIcon />
+            </div>
+            <div className="brand-lockup">
+              <span className="brand-name">
+                <PotzLuckMark />
+              </span>
+              <span className="brand-sub">on Tezos X</span>
+            </div>
+          </button>
           <div className="topbar-right">
-            <a
-              className="btn ghost sm"
-              href={TEZOS_X_TESTNET_DASHBOARD_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Explore Tezos X ↗
-            </a>
             {walletState.address ? (
               <div className="wallet-menu" ref={walletMenuRef}>
                 <button
@@ -1571,7 +1944,9 @@ function App() {
                 >
                   <span className="wallet-avatar" />
                   <span className="addr">{shortAddr(walletState.address)}</span>
-                  <span className="caret">▾</span>
+                  <svg className="caret" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M3 4.5 6 7.5l3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </button>
                 {walletMenuOpen ? (
                   <div className="wallet-dropdown">
@@ -1601,187 +1976,140 @@ function App() {
                 <button type="button" className="btn ghost sm" onClick={openTourFromGame}>
                   Take the tour
                 </button>
-                <button type="button" className="btn ghost sm" onClick={connectWallet}>
-                  Connect wallet
-                </button>
               </>
             )}
+            <a
+              className="btn ghost sm"
+              href={TEZOS_X_TESTNET_DASHBOARD_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Explore Tezos X ↗
+            </a>
           </div>
         </header>
 
         <main className="pl-game">
-          <aside className="game-stats">
-            <div className="stat-row hero">
-              <div className="stat-l">Pot size</div>
-              <div className="stat-v hero-v">
-                <b>{gameState ? gameState.potDisplay : "—"}</b> <span>USDC</span>
+          <div className="game-layout">
+            <aside className="game-stats">
+              <div className="stat-row hero">
+                <div className="stat-l">Pot size</div>
+                <div className="stat-v hero-v">
+                  <b>{gameState ? gameState.potDisplay : "—"}</b> <span>USDC</span>
+                </div>
               </div>
-            </div>
-            <div className="stat-row">
-              <div className="stat-l">Last player</div>
-              <div className="stat-v">{lastPlayerDisplay}</div>
-            </div>
-            <div className="stat-row">
-              <div className="stat-l">Game ends</div>
-              <div className="stat-v">{sessionLabel}</div>
-            </div>
-            <div className={`session-state ${sessionActive ? "active" : ""}`}>
-              <span className="dot" />
-              {sessionActive ? "Session active" : "No active session"}
-            </div>
-          </aside>
+              <div className="stat-row">
+                <div className="stat-l">Last player</div>
+                <div className="stat-v">{lastPlayerDisplay}</div>
+              </div>
+              <div className="stat-row">
+                <div className="stat-l">Game ends</div>
+                <div className="stat-v">{sessionLabel}</div>
+              </div>
+              {canClaim ? (
+                <button
+                  type="button"
+                  className="btn primary sm claim-under-ends"
+                  onClick={() => void claimContract()}
+                  disabled={!canClaim}
+                >
+                  {isClaiming ? "Claiming..." : "Claim Winnings"}
+                </button>
+              ) : null}
+              <div className={`session-state ${sessionActive ? "active" : ""}`}>
+                <span className="dot" />
+                {sessionActive ? "Session active" : "No active session"}
+              </div>
+            </aside>
 
-          <div className="pot-stage">
-            <PotButton
-              state={potUiState}
-              label={potCopy.label}
-              sublabel={potCopy.sub}
-              progress={potProgressShown}
-              onClick={() => void onPotClick()}
-              disabled={
-                potUiState === "depositing" ||
-                (potUiState === "play" && !canPressButton) ||
-                (potUiState === "idle" && !canStartNewSession) ||
-                (potUiState === "won" && !canClaim)
-              }
-            />
-            {walletState.address && !onExpectedNetwork ? (
-              <NetworkHelpPotz onAdd={() => void switchNetwork()} />
-            ) : null}
-            {canClaim ? (
-              <div className="won-banner">
-                Session ended. <b>You can claim</b> if you were the last player — use the pot or wait for payout.
+            <div className="pot-stage">
+              <div className="pot-stage-pot-wrap">
+                <PotButton
+                  state={potUiState}
+                  label={potCopy.label}
+                  sublabel={potCopy.sub}
+                  progress={potProgressShown}
+                  onClick={() => void onPotClick()}
+                  disabled={
+                    potUiState === "depositing" ||
+                    (potUiState === "connect" && isConnecting) ||
+                    (potUiState === "play" && !canPressButton) ||
+                    (potUiState === "idle" && !canStartNewSession) ||
+                    (potUiState === "won" && !canStartNewSession)
+                  }
+                />
+                {depositFxId > 0 ? (
+                  <DepositPotCelebration key={depositFxId} onComplete={dismissDepositFx} />
+                ) : null}
               </div>
-            ) : null}
-            {!sessionActive && !gameState?.claimed && onExpectedNetwork && walletState.address ? (
-              <div className="state-msg">No active session. Press Play on the pot to start a new round.</div>
-            ) : null}
-            <EventLogStrip entries={eventLog} />
+              {walletState.address && !onExpectedNetwork ? (
+                <NetworkHelpPotz onAdd={() => void switchNetwork()} />
+              ) : null}
+              <EventLogStrip entries={eventLog} evmTxUrl={evmTxUrl} />
+            </div>
           </div>
 
-          <aside className="game-side">
-            <JourneyIntro phase={journeyPhase} />
-
-            <div className="side-note">
-              <div style={{ fontWeight: 600, marginBottom: 6 }}>Wallet</div>
-              <ExplorableAddress
-                address={walletState.address}
-                displayText={!walletState.address ? "Not connected" : undefined}
-              />
-              <div className="mono" style={{ marginTop: 8, color: "var(--fg-2)" }}>
-                USDC: {walletState.usdcBalance ?? "—"}
-              </div>
-            </div>
-            <p className="side-note">
-              <a href={faucetUrl} className="link-btn inline" target="_blank" rel="noopener noreferrer">
-                Faucet
-              </a>
-              {" · "}
-              <a
-                href={TEZOS_X_TESTNET_DASHBOARD_URL}
-                className="link-btn inline"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Dashboard
-              </a>
-            </p>
-            {isConnecting ? <p className="side-note">Connecting wallet…</p> : null}
-            {!hasInjectedWallet ? (
-              <p className="side-note" style={{ color: "var(--amber)" }}>
-                No wallet detected. Install MetaMask and reload.
-              </p>
-            ) : null}
-            {walletError ? <p className="side-note" style={{ color: "var(--amber)" }}>{walletError}</p> : null}
-            {canStartNewSession ? (
-              <button
-                type="button"
-                className="btn ghost sm"
-                onClick={() => void startNewSession()}
-                disabled={!canStartNewSession || isStartingSession}
-              >
-                {isStartingSession ? "Starting…" : "Start new session"}
-              </button>
-            ) : null}
-            {!sessionActive && !gameState?.claimed ? (
-              <p className="side-note" style={{ color: "var(--amber)" }}>
-                Round over — start a new session from the pot or here.
-              </p>
-            ) : null}
-            {gameState?.payoutCompleted ? (
-              <p className="side-note good">
-                Payout complete.{" "}
-                {payoutTxHash ? (
-                  <a href={evmTxUrl(payoutTxHash)} target="_blank" rel="noopener noreferrer" className="explorer-link">
-                    View transfer
-                  </a>
-                ) : (
-                  <a href={evmAddressUrl(CONFIG.potAddress)} target="_blank" rel="noopener noreferrer" className="explorer-link">
-                    View escrow
-                  </a>
-                )}
-              </p>
-            ) : null}
-            {gameState?.claimed &&
-            walletState.address &&
-            gameState.lastPlayerAddress &&
-            walletState.address.toLowerCase() !== gameState.lastPlayerAddress.toLowerCase() ? (
-              <p className="side-note">Only the last player can claim.</p>
-            ) : null}
-            {gameState?.claimed && !gameState.payoutCompleted ? (
-              <p className="side-note">Waiting for relayer payout…</p>
-            ) : null}
-
-            <div className={`status ${actionState.kind}`}>
-              <span className="status-label">{actionState.kind.toUpperCase()}</span>
-              <p className="status-message">{actionState.message}</p>
-              {actionState.steps && actionState.steps.length > 0 ? (
-                <FlowProgress steps={actionState.steps} />
-              ) : null}
-              {actionState.txHash ? (
-                <p className="status-tx-link">
-                  <a
-                    href={evmTxUrl(actionState.txHash)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="explorer-link"
-                    title={actionState.txHash}
-                  >
-                    Explorer
-                  </a>
+          {hasGameStatus ? (
+            <section className="game-status-area">
+              {!hasInjectedWallet ? (
+                <p className="side-note" style={{ color: "var(--amber)" }}>
+                  No wallet detected. Install MetaMask and reload.
                 </p>
               ) : null}
-            </div>
-
-            <div className="side-note mono" style={{ fontSize: 11 }}>
-              Chain {CONFIG.chainId.toString()} · poll{" "}
-              {CONFIG.pollIntervalMs >= 1000 ? `${CONFIG.pollIntervalMs / 1000}s` : `${CONFIG.pollIntervalMs}ms`}
-            </div>
-            <div className="side-note">
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>Escrow</div>
-              <ExplorableAddress address={CONFIG.potAddress} />
-            </div>
-            <div className="side-note">
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>Game</div>
-              <ExplorableAddress address={CONFIG.gameContract} />
-            </div>
-            <div className="side-note">
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>NAC gateway</div>
-              <ExplorableAddress address={CONFIG.cracPrecompile} />
-            </div>
-            {gameState ? (
-              <p className="side-note">Michelson refresh: {new Date(gameState.fetchedAt).toLocaleTimeString()}</p>
-            ) : null}
-            {gameStateError ? <p className="side-note" style={{ color: "var(--amber)" }}>{gameStateError}</p> : null}
-          </aside>
+              {walletError ? (
+                walletError === TEZOS_X_EVM_WALLET_HINT ? (
+                  <p className="side-note" style={{ color: "var(--amber)" }}>
+                    {TEZOS_X_EVM_WALLET_HINT}{" "}
+                    <a
+                      href={NETWORK_INFO.dashboardUrl}
+                      className="explorer-link"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setNetworkInfoOpen(true);
+                      }}
+                    >
+                      See network information
+                    </a>
+                    .
+                  </p>
+                ) : (
+                  <p className="side-note" style={{ color: "var(--amber)" }}>
+                    {walletError}
+                  </p>
+                )
+              ) : null}
+              {gameState?.claimed &&
+                walletState.address &&
+                gameState.lastPlayerAddress &&
+                walletState.address.toLowerCase() !== gameState.lastPlayerAddress.toLowerCase() ? (
+                <p className="side-note" style={{ color: "var(--amber)" }}>
+                  Only the last person who pressed can claim. Winner wallet:{" "}
+                  <ExplorableAddress address={gameState.lastPlayerAddress} />.
+                </p>
+              ) : gameState?.claimed && !gameState?.payoutCompleted ? (
+                <p className="side-note">
+                  Waiting for payout. A service sends USDC to the winner. If nothing moves after a minute, refresh your
+                  balance or check that the relayer is running.
+                </p>
+              ) : null}
+              {gameStateError ? <p className="side-note" style={{ color: "var(--amber)" }}>{gameStateError}</p> : null}
+            </section>
+          ) : null}
         </main>
         <PotFooter
           faucetUrl={faucetUrl}
-          dashboardUrl={TEZOS_X_TESTNET_DASHBOARD_URL}
           docsUrl={POTZ_DOCS_URL}
-          gameExplorerUrl={tezosContractUrl(CONFIG.gameContract)}
+          tezlinkUrl={TEZLINK_SITE_URL}
+          onOpenNetworkInfo={() => setNetworkInfoOpen(true)}
         />
       </div>
+      <NetworkInfoModal open={networkInfoOpen} onClose={() => setNetworkInfoOpen(false)} />
+      <AirdropModal
+        open={airdropModalState.open}
+        receivedUsdc={airdropModalState.usdc}
+        receivedXtz={airdropModalState.xtz}
+        onDismiss={dismissAirdropModal}
+      />
       <PotzTour
         open={tourOpen}
         stepIdx={tourStep}
