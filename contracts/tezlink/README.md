@@ -17,7 +17,7 @@ Michelson never calls these methods; they are for the relayer and tooling only. 
 
 | Folder    | Contents |
 |----------|----------|
-| **`ligo/`** | Contract source in CameLIGO (`xbutton.mligo`) and compiled Michelson (`xbutton.tz`). Compile contract and storage with Ligo, then originate with octez-client. |
+| **`ligo/`** | Contract source in CameLIGO (`xbutton.mligo`) and compiled Michelson (`xbutton.tz`). Compile contract and storage with Ligo, then originate with octez-client. Also **`counter-nac-tutorial.mligo`**: NAC tutorial counter — `ligo compile contract counter-nac-tutorial.mligo -m CounterNacTutorial > counter-nac-tutorial.tz`, then `octez-client originate` as in this README. |
 
 ## How it works
 

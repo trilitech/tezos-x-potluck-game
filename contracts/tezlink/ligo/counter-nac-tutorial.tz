@@ -1,0 +1,13 @@
+{ parameter (or (unit %reset) (or (unit %decrement) (unit %increment))) ;
+  storage int ;
+  code { UNPAIR ;
+         IF_LEFT
+           { DROP 2 ; PUSH int 0 ; NIL operation ; PAIR }
+           { IF_LEFT
+               { DROP ;
+                 DUP ;
+                 EQ ;
+                 IF { PUSH string "at zero" ; FAILWITH }
+                    { PUSH int -1 ; ADD ; NIL operation ; PAIR } }
+               { DROP ; PUSH int 1 ; ADD ; NIL operation ; PAIR } } } }
+

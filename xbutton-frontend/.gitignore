@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Claude Design API download artifact (gzip bundle; do not commit)
+design-fetched.html

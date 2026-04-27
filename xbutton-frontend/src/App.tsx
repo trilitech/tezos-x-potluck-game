@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ethers } from "ethers";
 import "./App.css";
+import "./potzluck.css";
+import { PotzTour } from "./PotzTour";
+import { EventLogStrip, NetworkHelpPotz, PotButton, PotFooter, shortAddr } from "./potzluckUi";
 
 const evmRpc = import.meta.env.VITE_EVM_RPC ?? "https://demo.txpark.nomadic-labs.com/rpc";
 const tezlinkRpc = import.meta.env.VITE_TEZLINK_RPC ?? "https://demo.txpark.nomadic-labs.com/rpc/tezlink";
@@ -50,6 +53,8 @@ const CONFIG = {
 
 /** Tezos X testnet dashboard (RPC, chain ID, explorers, faucet): https://demo.txpark.nomadic-labs.com/ */
 const TEZOS_X_TESTNET_DASHBOARD_URL = "https://demo.txpark.nomadic-labs.com/";
+const POTZ_DOCS_URL =
+  import.meta.env.VITE_DOCS_URL ?? "https://docs.tezos.com/tezos-x/build-your-first-dapp";
 
 function evmAddressUrl(address: string) {
   return `${CONFIG.evmExplorerUrl}/address/${address}`;
@@ -711,6 +716,18 @@ function App() {
     message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
   });
 
+  const [shellView, setShellView] = useState<"landing" | "game">("landing");
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourStep, setTourStep] = useState(0);
+  const [walletMenuOpen, setWalletMenuOpen] = useState(false);
+  const walletMenuRef = useRef<HTMLDivElement>(null);
+  const eventLogId = useRef(0);
+  const [eventLog, setEventLog] = useState<{ id: number; msg: string }[]>([]);
+  const pushEventLog = useCallback((msg: string) => {
+    eventLogId.current += 1;
+    setEventLog((prev) => [...prev.slice(-19), { id: eventLogId.current, msg }]);
+  }, []);
+
   const hasInjectedWallet = typeof window !== "undefined" && Boolean(getEthereum());
   const onExpectedNetwork = walletState.chainId === CONFIG.chainId;
   const nowSeconds = Math.floor(Date.now() / 1000);
@@ -726,6 +743,28 @@ function App() {
     !isSubmitting &&
     sessionActive &&
     !gameState?.claimed;
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    console.log("[xbutton deposit-prep]", {
+      usdc: CONFIG.usdcAddress,
+      pot: CONFIG.potAddress,
+      wallet: walletState.address,
+      usdcAllowance: walletState.usdcAllowance?.toString() ?? null,
+      pressAmountUnits: PRESS_AMOUNT_UNITS.toString(),
+      needsApproval,
+      onExpectedNetwork,
+      sessionActive,
+      gameClaimed: gameState?.claimed ?? null,
+    });
+  }, [
+    walletState.address,
+    walletState.usdcAllowance,
+    needsApproval,
+    onExpectedNetwork,
+    sessionActive,
+    gameState?.claimed,
+  ]);
 
   const canClaim =
     hasInjectedWallet &&
@@ -744,6 +783,43 @@ function App() {
     Boolean(gameState) &&
     !sessionActive;
 
+  const potUiState = useMemo<
+    "connect" | "wrong-net" | "idle" | "play" | "depositing" | "won"
+  >(() => {
+    if (!walletState.address) return "connect";
+    if (!onExpectedNetwork) return "wrong-net";
+    if (isSubmitting || isClaiming || isStartingSession) return "depositing";
+    if (canClaim) return "won";
+    if (sessionActive && gameState && !gameState.claimed) return "play";
+    return "idle";
+  }, [
+    walletState.address,
+    onExpectedNetwork,
+    isSubmitting,
+    isClaiming,
+    isStartingSession,
+    canClaim,
+    sessionActive,
+    gameState,
+  ]);
+
+  const [ringTick, setRingTick] = useState(0);
+  useEffect(() => {
+    if (shellView !== "game" || !sessionActive) return;
+    const id = window.setInterval(() => setRingTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [shellView, sessionActive]);
+
+  const potRingProgress = useMemo(() => {
+    if (!sessionActive || !gameState || gameState.sessionEnd <= Math.floor(Date.now() / 1000)) {
+      return null;
+    }
+    void ringTick;
+    const now = Math.floor(Date.now() / 1000);
+    const left = Math.max(0, gameState.sessionEnd - now);
+    return Math.min(1, left / DEFAULT_SESSION_DURATION_SEC);
+  }, [sessionActive, gameState, ringTick]);
+
   const sessionLabel = useMemo(() => {
     if (!gameState) return "Loading...";
     return new Date(gameState.sessionEnd * 1000).toLocaleString();
@@ -754,6 +830,36 @@ function App() {
     if (!onExpectedNetwork) return "network";
     return "ready";
   }, [walletState.address, onExpectedNetwork]);
+
+  const lastEventLogKey = useRef("");
+  useEffect(() => {
+    if (actionState.kind !== "success" && actionState.kind !== "error") return;
+    const key = `${actionState.kind}:${actionState.message}:${actionState.txHash ?? ""}`;
+    if (key === lastEventLogKey.current) return;
+    lastEventLogKey.current = key;
+    pushEventLog(actionState.message);
+  }, [actionState.kind, actionState.message, actionState.txHash, pushEventLog]);
+
+  useEffect(() => {
+    if (!walletMenuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (walletMenuRef.current && !walletMenuRef.current.contains(e.target as Node)) {
+        setWalletMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [walletMenuOpen]);
+
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem("potzluck_skip_landing") === "1") {
+        setShellView("game");
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const refreshWalletState = useCallback(async (requestAccounts = false) => {
     if (isWalletDisconnected && !requestAccounts) {
@@ -1285,287 +1391,406 @@ function App() {
     }
   }
 
-  return (
-    <div className="app-shell">
-      <main className="app app-layout">
-        <div className="main-column">
-          <header className="hero">
-            <h1>XButton</h1>
-            <p className="hero-copy">
-              The XButton app uses a simple game to show cross-runtime execution and native atomic calls on Tezos.
-            </p>
-          </header>
+  const startTourFromLanding = useCallback(() => {
+    setShellView("game");
+    setTourStep(0);
+    setTourOpen(true);
+  }, []);
 
-          <JourneyIntro phase={journeyPhase} />
+  const skipLandingToGame = useCallback(() => {
+    try {
+      sessionStorage.setItem("potzluck_skip_landing", "1");
+    } catch {
+      /* ignore */
+    }
+    setShellView("game");
+  }, []);
 
-          <section className="panel wallet-panel">
-            <div className="panel-header">
-              <h2>Wallet</h2>
-            <div className="wallet-actions">
-              {!walletState.address ? (
-                <button onClick={connectWallet} disabled={isConnecting || !hasInjectedWallet}>
-                  {isConnecting ? "Connecting..." : "Connect wallet"}
-                </button>
-              ) : !onExpectedNetwork ? (
-                <>
-                  <button onClick={switchNetwork}>Switch to TezosX EVM</button>
-                  <button className="secondary-button" onClick={disconnectWallet}>
-                    Disconnect
-                  </button>
-                </>
-              ) : (
-                <>
-                  <span className="chip success">Ready</span>
-                  <button className="secondary-button" onClick={disconnectWallet}>
-                    Disconnect
-                  </button>
-                </>
-              )}
+  const openTourFromGame = useCallback(() => {
+    setWalletMenuOpen(false);
+    setTourStep(0);
+    setTourOpen(true);
+  }, []);
+
+  const tourNext = useCallback(() => setTourStep((s) => Math.min(5, s + 1)), []);
+  const tourBack = useCallback(() => setTourStep((s) => Math.max(0, s - 1)), []);
+  const tourClose = useCallback(() => setTourOpen(false), []);
+  const tourEnd = useCallback(() => {
+    setTourOpen(false);
+    setShellView("game");
+  }, []);
+
+  const onPotClick = useCallback(async () => {
+    if (potUiState === "connect") {
+      await connectWallet();
+      return;
+    }
+    if (potUiState === "wrong-net") {
+      await switchNetwork();
+      return;
+    }
+    if (potUiState === "won") {
+      await claimContract();
+      return;
+    }
+    if (potUiState === "idle") {
+      await startNewSession();
+      return;
+    }
+    if (potUiState === "play") {
+      await pressButton();
+    }
+  }, [potUiState, connectWallet, switchNetwork, claimContract, startNewSession, pressButton]);
+
+  const potCopy = useMemo(() => {
+    switch (potUiState) {
+      case "connect":
+        return { label: "Connect", sub: "wallet to play" };
+      case "wrong-net":
+        return { label: "Add Tezos X", sub: "network" };
+      case "idle":
+        return { label: "Play", sub: "start a new session" };
+      case "play":
+        return { label: "Press", sub: `${CONFIG.pressAmount} USDC` };
+      case "depositing":
+        return { label: "…", sub: "working" };
+      case "won":
+        return { label: "Claim", sub: "winnings" };
+    }
+  }, [potUiState, CONFIG.pressAmount]);
+
+  const potProgressShown =
+    potUiState === "play" || potUiState === "depositing" ? potRingProgress : null;
+
+  const lastPlayerDisplay = useMemo(() => {
+    if (!gameState?.lastPlayerAddress) {
+      if (gameState?.lastPlayerTezos) return gameState.lastPlayerTezos;
+      return "—";
+    }
+    return shortAddr(gameState.lastPlayerAddress);
+  }, [gameState?.lastPlayerAddress, gameState?.lastPlayerTezos]);
+
+  if (shellView === "landing") {
+    return (
+      <>
+        <div className="bg-grid" />
+        <div className="bg-glow" />
+        <div className="pl-shell">
+          <header className="pl-topbar">
+            <div className="brand">
+              <div className="brand-mark">P</div>
+              <span className="brand-name">PotzLuck</span>
             </div>
-          </div>
-
-          <div className="grid two">
-            <div className="stat">
-              <span>Wallet Address</span>
-              <strong>
-                <ExplorableAddress
-                  address={walletState.address}
-                  displayText={!walletState.address ? "Not connected" : undefined}
-                />
-              </strong>
-            </div>
-            <div className="stat">
-              <span>YOUR USDC BALANCE</span>
-              <strong>
-                {walletState.usdcBalance ? `${walletState.usdcBalance} USDC` : "Unavailable"}
-              </strong>
-            </div>
-          </div>
-
-          <p className="inline-note faucet-hint">
-            Need testnet funds? Get some from the{" "}
-            <a
-              href={faucetUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="explorer-link"
-            >
-              faucet
-            </a>
-            .
-          </p>
-
-          <p className="inline-note tezos-x-dashboard-hint">
-            To connect to <strong>Tezos X EVM</strong>, use the{" "}
-            <a
-              href={TEZOS_X_TESTNET_DASHBOARD_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="explorer-link"
-            >
-              Tezos X testnet dashboard
-            </a>{" "}
-            for the RPC URL, chain ID, explorers, and faucet links for this runtime.
-          </p>
-
-          {!hasInjectedWallet ? (
-            <p className="inline-note error">No wallet add-on detected. Install something like MetaMask, then reload.</p>
-          ) : null}
-          {walletError ? (
-            walletError === TEZOS_X_EVM_WALLET_HINT ? (
-              <p className="inline-note error">
-                {TEZOS_X_EVM_WALLET_HINT}{" "}
-                <a
-                  href={TEZOS_X_TESTNET_DASHBOARD_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="explorer-link"
-                >
-                  See network information on the Tezos X testnet dashboard
-                </a>
-                .
-              </p>
-            ) : (
-              <p className="inline-note error">{walletError}</p>
-            )
-          ) : null}
-        </section>
-
-        <section className="panel action-panel">
-          <div className="panel-header">
-            <h2>Press The Button</h2>
-            {canStartNewSession ? (
-              <button
-                className="primary-button"
-                onClick={startNewSession}
-                disabled={!canStartNewSession || isStartingSession}
-              >
-                {isStartingSession ? "Starting..." : "Start new session"}
-              </button>
-            ) : (
-              <span className="chip">{CONFIG.pressAmount} USDC</span>
-            )}
-          </div>
-
-          <p className="action-copy">
-            {canStartNewSession
-              ? "Starts a new round and clears the game pot."
-              : "Sends 1 USDC to the escrow. Approve USDC first if your wallet asks. The steps below explain each part in order."}
-          </p>
-
-          <div className="action-primary-buttons">
-            <button className="primary-button" onClick={pressButton} disabled={!canPressButton}>
-              {isSubmitting ? "Processing..." : "Press XButton"}
-            </button>
-
-            {canClaim ? (
-              <button className="primary-button" onClick={claimContract} disabled={!canClaim}>
-                {isClaiming ? "Claiming..." : "Claim Winnings"}
-              </button>
-            ) : null}
-          </div>
-
-          {!sessionActive && !gameState?.claimed ? (
-            <p className="inline-note error">
-              This round is over, so new deposits will not change the game. Start a new session to continue.
-            </p>
-          ) : null}
-          {gameState?.payoutCompleted ? (
-            <p className="inline-note">
-              Payout complete. USDC has been sent to the winner.
-              {" "}
-              {payoutTxHash ? (
-                <a href={evmTxUrl(payoutTxHash)} target="_blank" rel="noopener noreferrer" className="explorer-link">
-                  View transfer
-                </a>
-              ) : (
-                <a href={evmAddressUrl(CONFIG.potAddress)} target="_blank" rel="noopener noreferrer" className="explorer-link">
-                  View escrow
-                </a>
-              )}
-            </p>
-          ) : gameState?.claimed &&
-          walletState.address &&
-          gameState.lastPlayerAddress &&
-          walletState.address.toLowerCase() !== gameState.lastPlayerAddress.toLowerCase() ? (
-            <p className="inline-note error">
-              Only the last person who pressed can claim. Winner wallet:{" "}
-              <ExplorableAddress address={gameState.lastPlayerAddress} />.
-            </p>
-          ) : gameState?.claimed ? (
-            <p className="inline-note">
-              Waiting for payout. A service sends USDC to the winner. If nothing moves after a minute, refresh your
-              balance or check that the relayer is running.
-            </p>
-          ) : null}
-
-          <div className={`status ${actionState.kind}`}>
-            <span className="status-label">{actionState.kind.toUpperCase()}</span>
-            <p className="status-message">{actionState.message}</p>
-            {actionState.steps && actionState.steps.length > 0 ? (
-              <FlowProgress steps={actionState.steps} />
-            ) : null}
-            {actionState.txHash ? (
-              <p className="status-tx-link">
-                <a
-                  href={evmTxUrl(actionState.txHash)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="explorer-link"
-                  title={actionState.txHash}
-                >
-                  See it on the explorer
-                </a>
-              </p>
-            ) : null}
-          </div>
-        </section>
-        </div>
-
-        <aside className="network-sidebar" aria-label="Network and live game">
-          <div className="sidebar-sticky">
-            <h2 className="sidebar-heading">Game status & addresses</h2>
-            <p className="sidebar-lead">
-              Pulled from the Michelson interface (game contract) and from your wallet on the EVM interface (Tezos X EVM). Use it to sanity-check balances and addresses
-              while you click through the demo. Network setup:{" "}
+            <div className="topbar-right">
               <a
+                className="btn ghost sm"
                 href={TEZOS_X_TESTNET_DASHBOARD_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="explorer-link"
               >
-                demo.txpark.nomadic-labs.com
+                Explore Tezos X ↗
               </a>
-              .
-            </p>
-            <div className="sidebar-toolbar">
-              <span className="chip">
-                Polling about every{" "}
-                {CONFIG.pollIntervalMs >= 1000 ? `${CONFIG.pollIntervalMs / 1000}s` : `${CONFIG.pollIntervalMs}ms`}
+            </div>
+          </header>
+          <main className="pl-landing">
+            <h1 className="landing-h">
+              Discover <span className="hl">Native Atomic Composability</span> on Tezos X
+              <span className="landing-sub-h"> by playing PotzLuck.</span>
+            </h1>
+            <div className="landing-cta">
+              <div className="cta-col">
+                <div className="cta-eyebrow">Already know NAC on Tezos X?</div>
+                <button type="button" className="btn primary lg" onClick={skipLandingToGame}>
+                  Play Game
+                </button>
+              </div>
+              <div className="cta-divider">
+                <span>or</span>
+              </div>
+              <div className="cta-col">
+                <div className="cta-eyebrow">Learn about NAC on Tezos X before you play</div>
+                <button type="button" className="btn ghost lg" onClick={startTourFromLanding}>
+                  Take the Tour
+                </button>
+              </div>
+            </div>
+            <div className="landing-meta">
+              <span className="meta-pill">
+                <span className="d evm" /> Etherlink
+              </span>
+              <span className="meta-sep">+</span>
+              <span className="meta-pill subtle">
+                <span className="d tez" /> Tezlink
               </span>
             </div>
+          </main>
+          <PotFooter
+            faucetUrl={faucetUrl}
+            dashboardUrl={TEZOS_X_TESTNET_DASHBOARD_URL}
+            docsUrl={POTZ_DOCS_URL}
+            gameExplorerUrl={tezosContractUrl(CONFIG.gameContract)}
+          />
+        </div>
+        <PotzTour
+          open={tourOpen}
+          stepIdx={tourStep}
+          onNext={tourNext}
+          onBack={tourBack}
+          onClose={tourClose}
+          onEndGoToGame={tourEnd}
+        />
+      </>
+    );
+  }
 
-            <div className="sidebar-stats">
-              <div className="stat">
-                <span>Tezos X EVM chain ID</span>
-                <strong>{CONFIG.chainId.toString()}</strong>
+  return (
+    <>
+      <div className="bg-grid" />
+      <div className="bg-glow" />
+      <div className="pl-shell">
+        <header className="pl-topbar">
+          <div className="brand">
+            <div className="brand-mark">P</div>
+            <span className="brand-name">PotzLuck</span>
+          </div>
+          <div className="topbar-right">
+            <a
+              className="btn ghost sm"
+              href={TEZOS_X_TESTNET_DASHBOARD_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Explore Tezos X ↗
+            </a>
+            {walletState.address ? (
+              <div className="wallet-menu" ref={walletMenuRef}>
+                <button
+                  type="button"
+                  className="wallet-pill"
+                  onClick={() => setWalletMenuOpen((o) => !o)}
+                >
+                  <span className="wallet-avatar" />
+                  <span className="addr">{shortAddr(walletState.address)}</span>
+                  <span className="caret">▾</span>
+                </button>
+                {walletMenuOpen ? (
+                  <div className="wallet-dropdown">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWalletMenuOpen(false);
+                        openTourFromGame();
+                      }}
+                    >
+                      Take the tour
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWalletMenuOpen(false);
+                        disconnectWallet();
+                      }}
+                    >
+                      Disconnect wallet
+                    </button>
+                  </div>
+                ) : null}
               </div>
-              <div className="stat">
-                <span>Pot balance (game)</span>
-                <strong>{gameState ? `${gameState.potDisplay} USDC` : "Loading..."}</strong>
-              </div>
-              <div className="stat">
-                <span>Last player</span>
-                <strong>
-                  {!gameState ? (
-                    "Loading..."
-                  ) : gameState.lastPlayerAddress ? (
-                    <ExplorableAddress address={gameState.lastPlayerAddress} />
-                  ) : gameState.lastPlayerTezos ? (
-                    "Resolving…"
-                  ) : (
-                    "-"
-                  )}
-                </strong>
-              </div>
-              <div className="stat">
-                <span>Session ends</span>
-                <strong>{sessionLabel}</strong>
-              </div>
-              <div className="stat">
-                <span>Claimed this round</span>
-                <strong>{gameState ? (gameState.claimed ? "Yes" : "No") : "Loading..."}</strong>
-              </div>
-              <div className="stat">
-                <span>EVM escrow (pot)</span>
-                <strong>
-                  <ExplorableAddress address={CONFIG.potAddress} />
-                </strong>
-              </div>
-              <div className="stat">
-                <span>Michelson game (KT1)</span>
-                <strong>
-                  <ExplorableAddress address={CONFIG.gameContract} />
-                </strong>
-              </div>
-              <div className="stat">
-                <span>Cross-runtime gateway (EVM)</span>
-                <strong>
-                  <ExplorableAddress address={CONFIG.cracPrecompile} />
-                </strong>
+            ) : (
+              <>
+                <button type="button" className="btn ghost sm" onClick={openTourFromGame}>
+                  Take the tour
+                </button>
+                <button type="button" className="btn ghost sm" onClick={connectWallet}>
+                  Connect wallet
+                </button>
+              </>
+            )}
+          </div>
+        </header>
+
+        <main className="pl-game">
+          <aside className="game-stats">
+            <div className="stat-row hero">
+              <div className="stat-l">Pot size</div>
+              <div className="stat-v hero-v">
+                <b>{gameState ? gameState.potDisplay : "—"}</b> <span>USDC</span>
               </div>
             </div>
+            <div className="stat-row">
+              <div className="stat-l">Last player</div>
+              <div className="stat-v">{lastPlayerDisplay}</div>
+            </div>
+            <div className="stat-row">
+              <div className="stat-l">Game ends</div>
+              <div className="stat-v">{sessionLabel}</div>
+            </div>
+            <div className={`session-state ${sessionActive ? "active" : ""}`}>
+              <span className="dot" />
+              {sessionActive ? "Session active" : "No active session"}
+            </div>
+          </aside>
 
-            {gameState ? (
-              <p className="inline-note sidebar-note">
-                Last Michelson-side refresh: {new Date(gameState.fetchedAt).toLocaleTimeString()}
+          <div className="pot-stage">
+            <PotButton
+              state={potUiState}
+              label={potCopy.label}
+              sublabel={potCopy.sub}
+              progress={potProgressShown}
+              onClick={() => void onPotClick()}
+              disabled={
+                potUiState === "depositing" ||
+                (potUiState === "play" && !canPressButton) ||
+                (potUiState === "idle" && !canStartNewSession) ||
+                (potUiState === "won" && !canClaim)
+              }
+            />
+            {walletState.address && !onExpectedNetwork ? (
+              <NetworkHelpPotz onAdd={() => void switchNetwork()} />
+            ) : null}
+            {canClaim ? (
+              <div className="won-banner">
+                Session ended. <b>You can claim</b> if you were the last player — use the pot or wait for payout.
+              </div>
+            ) : null}
+            {!sessionActive && !gameState?.claimed && onExpectedNetwork && walletState.address ? (
+              <div className="state-msg">No active session. Press Play on the pot to start a new round.</div>
+            ) : null}
+            <EventLogStrip entries={eventLog} />
+          </div>
+
+          <aside className="game-side">
+            <JourneyIntro phase={journeyPhase} />
+
+            <div className="side-note">
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Wallet</div>
+              <ExplorableAddress
+                address={walletState.address}
+                displayText={!walletState.address ? "Not connected" : undefined}
+              />
+              <div className="mono" style={{ marginTop: 8, color: "var(--fg-2)" }}>
+                USDC: {walletState.usdcBalance ?? "—"}
+              </div>
+            </div>
+            <p className="side-note">
+              <a href={faucetUrl} className="link-btn inline" target="_blank" rel="noopener noreferrer">
+                Faucet
+              </a>
+              {" · "}
+              <a
+                href={TEZOS_X_TESTNET_DASHBOARD_URL}
+                className="link-btn inline"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Dashboard
+              </a>
+            </p>
+            {isConnecting ? <p className="side-note">Connecting wallet…</p> : null}
+            {!hasInjectedWallet ? (
+              <p className="side-note" style={{ color: "var(--amber)" }}>
+                No wallet detected. Install MetaMask and reload.
               </p>
             ) : null}
-            {gameStateError ? <p className="inline-note error">{gameStateError}</p> : null}
-          </div>
-        </aside>
-      </main>
-    </div>
+            {walletError ? <p className="side-note" style={{ color: "var(--amber)" }}>{walletError}</p> : null}
+            {canStartNewSession ? (
+              <button
+                type="button"
+                className="btn ghost sm"
+                onClick={() => void startNewSession()}
+                disabled={!canStartNewSession || isStartingSession}
+              >
+                {isStartingSession ? "Starting…" : "Start new session"}
+              </button>
+            ) : null}
+            {!sessionActive && !gameState?.claimed ? (
+              <p className="side-note" style={{ color: "var(--amber)" }}>
+                Round over — start a new session from the pot or here.
+              </p>
+            ) : null}
+            {gameState?.payoutCompleted ? (
+              <p className="side-note good">
+                Payout complete.{" "}
+                {payoutTxHash ? (
+                  <a href={evmTxUrl(payoutTxHash)} target="_blank" rel="noopener noreferrer" className="explorer-link">
+                    View transfer
+                  </a>
+                ) : (
+                  <a href={evmAddressUrl(CONFIG.potAddress)} target="_blank" rel="noopener noreferrer" className="explorer-link">
+                    View escrow
+                  </a>
+                )}
+              </p>
+            ) : null}
+            {gameState?.claimed &&
+            walletState.address &&
+            gameState.lastPlayerAddress &&
+            walletState.address.toLowerCase() !== gameState.lastPlayerAddress.toLowerCase() ? (
+              <p className="side-note">Only the last player can claim.</p>
+            ) : null}
+            {gameState?.claimed && !gameState.payoutCompleted ? (
+              <p className="side-note">Waiting for relayer payout…</p>
+            ) : null}
+
+            <div className={`status ${actionState.kind}`}>
+              <span className="status-label">{actionState.kind.toUpperCase()}</span>
+              <p className="status-message">{actionState.message}</p>
+              {actionState.steps && actionState.steps.length > 0 ? (
+                <FlowProgress steps={actionState.steps} />
+              ) : null}
+              {actionState.txHash ? (
+                <p className="status-tx-link">
+                  <a
+                    href={evmTxUrl(actionState.txHash)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="explorer-link"
+                    title={actionState.txHash}
+                  >
+                    Explorer
+                  </a>
+                </p>
+              ) : null}
+            </div>
+
+            <div className="side-note mono" style={{ fontSize: 11 }}>
+              Chain {CONFIG.chainId.toString()} · poll{" "}
+              {CONFIG.pollIntervalMs >= 1000 ? `${CONFIG.pollIntervalMs / 1000}s` : `${CONFIG.pollIntervalMs}ms`}
+            </div>
+            <div className="side-note">
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Escrow</div>
+              <ExplorableAddress address={CONFIG.potAddress} />
+            </div>
+            <div className="side-note">
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Game</div>
+              <ExplorableAddress address={CONFIG.gameContract} />
+            </div>
+            <div className="side-note">
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>NAC gateway</div>
+              <ExplorableAddress address={CONFIG.cracPrecompile} />
+            </div>
+            {gameState ? (
+              <p className="side-note">Michelson refresh: {new Date(gameState.fetchedAt).toLocaleTimeString()}</p>
+            ) : null}
+            {gameStateError ? <p className="side-note" style={{ color: "var(--amber)" }}>{gameStateError}</p> : null}
+          </aside>
+        </main>
+        <PotFooter
+          faucetUrl={faucetUrl}
+          dashboardUrl={TEZOS_X_TESTNET_DASHBOARD_URL}
+          docsUrl={POTZ_DOCS_URL}
+          gameExplorerUrl={tezosContractUrl(CONFIG.gameContract)}
+        />
+      </div>
+      <PotzTour
+        open={tourOpen}
+        stepIdx={tourStep}
+        onNext={tourNext}
+        onBack={tourBack}
+        onClose={tourClose}
+        onEndGoToGame={tourEnd}
+      />
+    </>
   );
 }
 
