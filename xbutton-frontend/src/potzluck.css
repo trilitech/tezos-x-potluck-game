@@ -718,7 +718,37 @@ body {
 }
 .tour-close:hover { background: var(--bg-3); color: var(--fg-1); }
 
-.tour-body { padding: 26px 28px 8px; }
+.tour-body {
+  padding: 26px 28px 8px;
+  color: var(--fg-2);
+}
+.tour-body .tour-h {
+  color: var(--fg-1);
+}
+.tour-body .tour-sub {
+  color: inherit;
+}
+.tour-body .tour-sub b {
+  color: inherit;
+  font-weight: 600;
+}
+/* Full-brightness highlight — use rarely in tour copy */
+.tour-body .tour-em {
+  color: var(--fg);
+  font-weight: 600;
+}
+/* Mid emphasis: clearer than body, softer than .tour-em */
+.tour-body .tour-name {
+  color: var(--fg-1);
+  font-weight: 600;
+}
+.tour-body .tour-point-v {
+  color: inherit;
+}
+.tour-body .tour-point-v b {
+  color: inherit;
+  font-weight: 600;
+}
 .tour-eyebrow {
   display: inline-flex; align-items: center; gap: 10px;
   margin-bottom: 12px;
@@ -737,11 +767,10 @@ body {
   text-wrap: balance;
 }
 .tour-sub {
-  color: var(--fg-2); font-size: 14px;
+  font-size: 14px;
   margin: 0 0 18px;
   text-wrap: pretty; max-width: 56ch;
 }
-.tour-sub b { color: var(--fg-1); font-weight: 500; }
 .tour-points {
   display: flex;
   flex-direction: column;
@@ -766,7 +795,6 @@ body {
   text-transform: uppercase;
 }
 .tour-point-v {
-  color: var(--fg-1);
   font-size: 13px;
   line-height: 1.45;
 }
@@ -827,13 +855,27 @@ body {
   align-items: center;
   text-align: center;
   min-height: 132px;
+  gap: 10px;
 }
 .runtime-row-bridge-layout .runtime-name {
   justify-content: center;
   width: 100%;
+  font-size: 12px;
+  gap: 6px;
+}
+.runtime-row-bridge-layout .runtime-etherlink-logo {
+  height: 20px;
+}
+.runtime-row-bridge-layout .runtime-name .rt-dot {
+  width: 6px;
+  height: 6px;
 }
 .runtime-row-bridge-layout .runtime-sub {
   width: 100%;
+  color: var(--fg-1);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.1em;
 }
 .runtime-card {
   border: 1px solid var(--line);
@@ -844,7 +886,7 @@ body {
 }
 .runtime-name {
   display: flex; align-items: center; gap: 8px;
-  font-weight: 500; font-size: 14px; color: var(--fg);
+  font-weight: 500; font-size: 14px; color: var(--fg-1);
 }
 .runtime-name-etherlink {
   justify-content: center;

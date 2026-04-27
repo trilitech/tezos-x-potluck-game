@@ -42,15 +42,17 @@ function StepWhat() {
         title="One app. Two interfaces."
         body={
           <>
-            Tezos X lets your dApps run on <b>Etherlink</b> (EVM Interface) and <b>Tezlink</b> (Michelson Interface)
-            seamlessly without your users having to switch network or context. This is achieved through{" "}
-            <b>Native Atomic Composability (NAC)</b>. The <b>NAC gateway</b> on the <b>EVM interface</b> is how calls
-            reach Tezlink and update Michelson-interface storage while your users stay in an EVM-native flow.
+            Tezos X lets your dApps run on Etherlink (EVM Interface) and Tezlink (Michelson Interface) seamlessly
+            without your users having to switch network or context. This is achieved through{" "}
+            <span className="tour-em">Native Atomic Composability (NAC)</span>. The{" "}
+            <span className="tour-em">NAC gateway</span> on the EVM interface is how calls reach Tezlink and update
+            Michelson-interface storage while your users stay in an EVM-native flow.
           </>
         }
       />
       <div className="runtime-row runtime-row-bridge-layout">
         <div className="runtime-card">
+          <div className="runtime-sub">EVM Interface</div>
           <div className="runtime-name runtime-name-etherlink">
             <img
               src="https://etherlink.com/logo-desktop.svg"
@@ -58,7 +60,6 @@ function StepWhat() {
               className="runtime-etherlink-logo"
             />
           </div>
-          <div className="runtime-sub">EVM Interface</div>
         </div>
         <div className="runtime-bridge">
           <span className="bridge-line" />
@@ -73,11 +74,11 @@ function StepWhat() {
           <span className="bridge-line" />
         </div>
         <div className="runtime-card">
+          <div className="runtime-sub">Michelson Interface</div>
           <div className="runtime-name">
             <span className="rt-dot tez" />
             Tezlink
           </div>
-          <div className="runtime-sub">Michelson Interface</div>
         </div>
       </div>
     </>
@@ -153,7 +154,8 @@ function StepPlaying() {
         title="Last deposit before the session ends wins."
         body={
           <>
-            The game is simple. When you click <b>&quot;Play&quot;</b>, you deposit funds into the game&apos;s pot.
+            The game is simple. When you click <span className="tour-em">&quot;Play&quot;</span>, you deposit funds into
+            the game&apos;s pot.
             The last player to deposit into the pot before the session ends, wins. That player can then claim all the
             tokens in the pot deposited by other players including their own deposit.
           </>
@@ -163,8 +165,8 @@ function StepPlaying() {
         <div className="tour-point">
           <span className="tour-point-k">Networks</span>
           <span className="tour-point-v">
-            Add the <b>Tezos X</b> test network to your <b>EVM wallet</b> (Etherlink) and, if you use a native Tezos
-            wallet on Tezlink, add Tezos X there too—both need the chain to connect and play.
+            Add the <span className="tour-name">Tezos X</span> test network to your EVM wallet (Etherlink) and, if you
+            use a native Tezos wallet on Tezlink, add Tezos X there too—both need the chain to connect and play.
           </span>
         </div>
         <div className="tour-point">
@@ -193,8 +195,8 @@ function StepBehind() {
           <>
             When you click the &quot;Play&quot; button, if there are no existing game sessions, a new game starts for
             a 5min session. 1 USDC is deposited into the game escrow contract. Once your deposit is detected, a small
-            relayer service calls the NAC gateway from the EVM side telling it your wallet address. The NAC gateway
-            calls the game storage contract in Michelson to update the game state.
+            relayer service calls the <span className="tour-em">NAC gateway</span> from the EVM side telling it your
+            wallet address. The NAC gateway calls the game storage contract in Michelson to update the game state.
           </>
         }
       />
@@ -224,11 +226,12 @@ function StepOneness() {
         body={
           <>
             Connect with a wallet on either the EVM interface (Etherlink) or the Michelson interface (Tezlink)—your
-            experience stays the same. That&apos;s the power of Tezos X.
+            experience stays the same. <span className="tour-em">That&apos;s the power of Tezos X.</span>
             <br />
             <br />
-            Use a <b>native Tezos wallet</b> and we&apos;ll create an <b>EVM alias</b> for you. You can use dApps on
-            Etherlink without installing a separate EVM-only wallet.{" "}
+            Use a <span className="tour-name">native Tezos wallet</span> and we&apos;ll create an{" "}
+            <span className="tour-name">EVM alias</span> for you. You can use dApps on Etherlink without installing a
+            separate EVM-only wallet.{" "}
             <button type="button" className="link-btn inline" onClick={window.__potzTourGoToGame}>
               Try it in the game →
             </button>
@@ -287,7 +290,7 @@ export function PotzTour({ open, stepIdx, onNext, onBack, onClose, onEndGoToGame
               Step <b>{stepIdx + 1}</b> of {TOUR_STEPS.length}
             </span>
             <span style={{ color: "var(--fg-4)" }}>·</span>
-            <span style={{ color: "var(--fg-1)" }}>{step.label}</span>
+            <span style={{ color: "var(--fg-2)" }}>{step.label}</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <Progress idx={stepIdx} total={TOUR_STEPS.length} />

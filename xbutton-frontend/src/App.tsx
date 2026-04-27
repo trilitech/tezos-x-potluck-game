@@ -40,6 +40,10 @@ const faucetUrl =
   import.meta.env.VITE_FAUCET_URL?.trim() || DEFAULT_TESTNET_FAUCET_URL;
 const DEFAULT_AIRDROP_API_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/api/airdrop";
 const airdropApiUrl = import.meta.env.VITE_AIRDROP_API_URL?.trim() || DEFAULT_AIRDROP_API_URL;
+
+/** Shown in status + event log when Michelson storage reports payout completed (deduped in payout effect). */
+const PAYOUT_SUCCESS_MESSAGE =
+  "Payout complete. The relayer finished paying the winner; their USDC balance should update shortly.";
 const AIRDROP_USDC_AMOUNT = "5";
 const AIRDROP_XTZ_AMOUNT = "5";
 
@@ -52,6 +56,10 @@ function airdropDeliveredLogMessage(usdc: boolean, xtz: boolean): string {
 }
 
 const tzktApiUrl = tezlinkRpc.replace(/\/rpc\/tezlink\/?$/, "") + "/tzkt";
+
+/** Path segment for `{VITE_TEZOS_EXPLORER_BASE}/{path}/operations` (Tezlink tzkt). Defaults to game KT1; use rollup-style id if your explorer requires it. */
+const tezktGameOperationsPath =
+  import.meta.env.VITE_TEZKT_GAME_OPERATIONS_PATH?.trim() || gameContract;
 
 const CONFIG = {
   appName: "XButton",
@@ -66,6 +74,7 @@ const CONFIG = {
   usdcAddress,
   potAddress,
   gameContract,
+  tezktGameOperationsPath,
   cracPrecompile,
   usdcDecimals,
   pressAmount,
@@ -106,6 +115,31 @@ function evmTxUrl(hash: string) {
 
 function tezosContractUrl(address: string) {
   return `${CONFIG.tezosExplorerBase}/${address}?tzkt_api_url=${encodeURIComponent(CONFIG.tzktApiUrl)}`;
+}
+
+/** Tezlink tzkt: contract (or rollup) operations list — e.g. `…/BLS2…/operations` or `…/KT1…/operations`. */
+function tezosGameOperationsUrl(): string {
+  const base = CONFIG.tezosExplorerBase.replace(/\/$/, "");
+  const seg = String(CONFIG.tezktGameOperationsPath).replace(/^\//, "");
+  return `${base}/${seg}/operations`;
+}
+
+/** Latest Michelson-side operation for the game contract (tzkt REST), as `{explorer}/{hash}`. */
+async function fetchLatestTezosOpExplorerUrl(): Promise<string | null> {
+  try {
+    const api = CONFIG.tzktApiUrl.replace(/\/$/, "");
+    const url = `${api}/v1/accounts/${encodeURIComponent(CONFIG.gameContract)}/operations?limit=1&sort.desc=id`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const rows = (await res.json()) as unknown;
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    const h = (rows[0] as { hash?: string })?.hash;
+    if (!h || typeof h !== "string") return null;
+    const exBase = CONFIG.tezosExplorerBase.replace(/\/$/, "");
+    return `${exBase}/${h}`;
+  } catch {
+    return null;
+  }
 }
 
 function isEvmAddress(value: string) {
@@ -394,10 +428,10 @@ function AirdropModal(props: {
 }
 
 type ActionState =
-  | { kind: "idle"; message: string; txHash?: undefined; steps?: undefined }
-  | { kind: "pending"; message: string; txHash?: string; steps?: FlowStep[] }
-  | { kind: "success"; message: string; txHash?: string; steps?: FlowStep[] }
-  | { kind: "error"; message: string; txHash?: string; steps?: undefined };
+  | { kind: "idle"; message: string; txHash?: undefined; tezosOpsUrl?: undefined; steps?: undefined }
+  | { kind: "pending"; message: string; txHash?: string; tezosOpsUrl?: string; steps?: FlowStep[] }
+  | { kind: "success"; message: string; txHash?: string; tezosOpsUrl?: string; steps?: FlowStep[] }
+  | { kind: "error"; message: string; txHash?: string; tezosOpsUrl?: string; steps?: undefined };
 
 type EthereumProvider = ethers.Eip1193Provider & {
   on?: (event: string, listener: (...args: unknown[]) => void) => void;
@@ -850,10 +884,22 @@ function App() {
   const [depositFxId, setDepositFxId] = useState(0);
   const eventLogId = useRef(0);
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
-  const pushEventLog = useCallback((msg: string, tone: EventLogTone = "info", txHash?: string) => {
-    eventLogId.current += 1;
-    setEventLog((prev) => [...prev.slice(-19), { id: eventLogId.current, msg, tone, ...(txHash ? { txHash } : {}) }]);
-  }, []);
+  const pushEventLog = useCallback(
+    (msg: string, tone: EventLogTone = "info", evmTxHash?: string, tezosOpsUrl?: string) => {
+      eventLogId.current += 1;
+      setEventLog((prev) => [
+        ...prev.slice(-19),
+        {
+          id: eventLogId.current,
+          msg,
+          tone,
+          ...(evmTxHash ? { txHash: evmTxHash } : {}),
+          ...(tezosOpsUrl ? { tezosOpsUrl } : {}),
+        },
+      ]);
+    },
+    [],
+  );
 
   const dismissAirdropModal = useCallback(() => {
     setAirdropModalState({ open: false, usdc: false, xtz: false });
@@ -881,7 +927,8 @@ function App() {
     onExpectedNetwork &&
     !sessionActive &&
     !isClaiming &&
-    Boolean(gameState);
+    gameState != null &&
+    !gameState.claimed;
 
   // Session ended: allow starting a new round even if prior claim/payout is still pending (on-chain reset).
   const canStartNewSession =
@@ -941,15 +988,20 @@ function App() {
   const lastEventLogKey = useRef("");
   useEffect(() => {
     if (actionState.kind === "idle") return;
-    const key = `${actionState.kind}:${actionState.message}:${actionState.txHash ?? ""}`;
+    // Payout success is pushed from the payout watcher effect so it always appears after the relayer line.
+    if (actionState.kind === "success" && actionState.message === PAYOUT_SUCCESS_MESSAGE) {
+      return;
+    }
+    const key = `${actionState.kind}:${actionState.message}:${actionState.txHash ?? ""}:${actionState.tezosOpsUrl ?? ""}`;
     if (key === lastEventLogKey.current) return;
     lastEventLogKey.current = key;
     pushEventLog(
       actionState.message,
       actionState.kind === "success" ? "success" : actionState.kind === "error" ? "error" : "info",
       actionState.txHash,
+      actionState.tezosOpsUrl,
     );
-  }, [actionState.kind, actionState.message, actionState.txHash, pushEventLog]);
+  }, [actionState.kind, actionState.message, actionState.txHash, actionState.tezosOpsUrl, pushEventLog]);
 
   useEffect(() => {
     if (!walletMenuOpen) return;
@@ -1129,11 +1181,23 @@ function App() {
     [refreshGameState],
   );
 
-  // When payout completes (after claim + relayer), refresh status text and event log; attach payout tx when found.
+  const lastPayoutEventFingerprint = useRef("");
+
+  // When payout completes (after claim + relayer), update status, event log, and payout tx when found.
   useEffect(() => {
-    if (!gameState?.payoutCompleted || !gameState?.claimed) {
+    if (!gameState?.claimed) {
+      lastPayoutEventFingerprint.current = "";
       return;
     }
+    if (!gameState?.payoutCompleted) {
+      return;
+    }
+
+    const fingerprint = `${gameState.sessionEnd}-${gameState.potRaw}`;
+    if (lastPayoutEventFingerprint.current === fingerprint) {
+      return;
+    }
+    lastPayoutEventFingerprint.current = fingerprint;
 
     let cancelled = false;
     const winner = gameState.lastPlayerAddress ?? walletState.address ?? null;
@@ -1147,23 +1211,26 @@ function App() {
       }
       if (cancelled) return;
 
+      pushEventLog(PAYOUT_SUCCESS_MESSAGE, "success", payoutHash ?? undefined);
+
       setActionState((prev) => {
-        if (prev.message.toLowerCase().includes("payout complete")) {
-          return prev;
+        if (prev.kind === "success" && prev.message === PAYOUT_SUCCESS_MESSAGE) {
+          return payoutHash && prev.txHash !== payoutHash
+            ? { ...prev, txHash: payoutHash }
+            : prev;
         }
         const m = prev.message.toLowerCase();
-        const inClaimPayoutFlow =
-          m.includes("waiting for payout") ||
-          m.includes("claim submitted") ||
-          m.includes("pay out the winner") ||
-          m.includes("claim transaction is confirmed");
-        if (!inClaimPayoutFlow) {
+        const looksLikeDepositOrSession =
+          (m.includes("deposit") && m.includes("michelson-interface")) ||
+          m.includes("new session started") ||
+          m.includes("approve usdc") ||
+          m.includes("loading game state");
+        if (looksLikeDepositOrSession) {
           return prev;
         }
         return {
           kind: "success" as const,
-          message:
-            "Payout complete. The relayer finished paying the winner; their USDC balance should update shortly.",
+          message: PAYOUT_SUCCESS_MESSAGE,
           ...(payoutHash ? { txHash: payoutHash } : {}),
         };
       });
@@ -1177,7 +1244,9 @@ function App() {
     gameState?.claimed,
     gameState?.lastPlayerAddress,
     gameState?.potRaw,
+    gameState?.sessionEnd,
     walletState.address,
+    pushEventLog,
   ]);
 
   useEffect(() => {
@@ -1512,11 +1581,15 @@ function App() {
       await waitForGameStateUpdate(currentState, depositSteps, tx.hash);
       await refreshWalletState(false);
 
+      const tezosOpDirect = await fetchLatestTezosOpExplorerUrl();
+      const tezosOpsUrl = tezosOpDirect ?? tezosGameOperationsUrl();
+
       setDepositFxId((id) => id + 1);
       setActionState({
         kind: "success",
         message: "Done. Your deposit is in and the Michelson-interface storage is updated.",
         txHash: tx.hash,
+        tezosOpsUrl,
         steps: completeFlowSteps(depositSteps),
       });
     } catch (error) {
@@ -1552,13 +1625,24 @@ function App() {
 
     try {
       const currentState = await refreshGameState();
-      if (currentState?.claimed) {
-        const payoutHash = await fetchPayoutTxHash(walletState.address);
+      if (currentState?.claimed && !currentState.payoutCompleted) {
+        setActionState({
+          kind: "pending",
+          message:
+            "Your claim is recorded. A relayer is paying the winner—Michelson-interface storage will show payout completed when USDC has been sent.",
+        });
+        setIsClaiming(false);
+        return;
+      }
+      if (currentState?.claimed && currentState.payoutCompleted) {
+        const payoutHash = await fetchPayoutTxHash(
+          currentState.lastPlayerAddress ?? walletState.address ?? null,
+        );
         setActionState({
           kind: "success",
           message: payoutHash
-            ? "Winnings have already been claimed. Payout transaction below."
-            : "Winnings have already been claimed.",
+            ? "Payout complete. Winnings were already paid; payout transaction below."
+            : "Payout complete. Winnings were already paid.",
           txHash: payoutHash ?? undefined,
         });
         setIsClaiming(false);
@@ -1836,10 +1920,7 @@ function App() {
   }, [gameState?.lastPlayerAddress, gameState?.lastPlayerTezos]);
 
   const hasGameStatus =
-    !hasInjectedWallet ||
-    Boolean(walletError) ||
-    Boolean(gameStateError) ||
-    Boolean(gameState?.claimed && !gameState?.payoutCompleted);
+    !hasInjectedWallet || Boolean(walletError) || Boolean(gameStateError);
 
   if (shellView === "landing") {
     return (
@@ -2085,11 +2166,6 @@ function App() {
                 <p className="side-note" style={{ color: "var(--amber)" }}>
                   Only the last person who pressed can claim. Winner wallet:{" "}
                   <ExplorableAddress address={gameState.lastPlayerAddress} />.
-                </p>
-              ) : gameState?.claimed && !gameState?.payoutCompleted ? (
-                <p className="side-note">
-                  Waiting for payout. A service sends USDC to the winner. If nothing moves after a minute, refresh your
-                  balance or check that the relayer is running.
                 </p>
               ) : null}
               {gameStateError ? <p className="side-note" style={{ color: "var(--amber)" }}>{gameStateError}</p> : null}

@@ -49,7 +49,15 @@ export function PotzLuckPotIcon() {
 }
 
 export type EventLogTone = "info" | "success" | "error";
-export type EventLogEntry = { id: number; msg: string; tone: EventLogTone; txHash?: string };
+export type EventLogEntry = {
+  id: number;
+  msg: string;
+  tone: EventLogTone;
+  /** EVM (Blockscout) transaction hash — links phrases like “deposit transaction”. */
+  txHash?: string;
+  /** Tezlink / tzkt page for Michelson-side activity (operations list or a specific op hash). */
+  tezosOpsUrl?: string;
+};
 
 /** Longer phrases first so we do not link the wrong substring (e.g. "claim" inside "claimed"). */
 const TX_LINK_PHRASES = [
@@ -65,7 +73,9 @@ const TX_LINK_PHRASES = [
   "approval",
 ] as const;
 
-function messageWithExplorerTx(
+const MICHELSON_STORAGE_PHRASE = "Michelson-interface storage";
+
+function messageWithExplorerTxInner(
   msg: string,
   txHash: string | undefined,
   evmTxUrl: (hash: string) => string,
@@ -96,6 +106,32 @@ function messageWithExplorerTx(
       </a>
     </>
   );
+}
+
+/** EVM explorer links on phrases in `TX_LINK_PHRASES`; optional Tezlink/tzkt link on “Michelson-interface storage”. */
+export function messageWithExplorerTx(
+  msg: string,
+  txHash: string | undefined,
+  evmTxUrl: (hash: string) => string,
+  tezosOpsUrl?: string,
+): ReactNode {
+  if (tezosOpsUrl && msg) {
+    const ti = msg.toLowerCase().indexOf(MICHELSON_STORAGE_PHRASE.toLowerCase());
+    if (ti >= 0) {
+      const afterMichelson = msg.slice(ti + MICHELSON_STORAGE_PHRASE.length);
+      return (
+        <>
+          {messageWithExplorerTxInner(msg.slice(0, ti), txHash, evmTxUrl)}
+          <a href={tezosOpsUrl} target="_blank" rel="noopener noreferrer" className="explorer-link">
+            {msg.slice(ti, ti + MICHELSON_STORAGE_PHRASE.length)}
+          </a>
+          {/* EVM tx is already linked in the leading segment (e.g. “deposit”); avoid trailing “View on explorer” on suffix text. */}
+          {messageWithExplorerTxInner(afterMichelson, undefined, evmTxUrl)}
+        </>
+      );
+    }
+  }
+  return messageWithExplorerTxInner(msg, txHash, evmTxUrl);
 }
 
 type PotState = "connect" | "wrong-net" | "idle" | "play" | "depositing" | "won";
@@ -235,7 +271,7 @@ export function EventLogStrip(props: { entries: EventLogEntry[]; evmTxUrl: (hash
           return (
             <div key={e.id} className={`el-line ${cls} el-${e.tone}`}>
               <span className="el-tag">[EVENT LOG]</span>
-              <span className="el-msg">{messageWithExplorerTx(e.msg, e.txHash, props.evmTxUrl)}</span>
+              <span className="el-msg">{messageWithExplorerTx(e.msg, e.txHash, props.evmTxUrl, e.tezosOpsUrl)}</span>
             </div>
           );
         })
