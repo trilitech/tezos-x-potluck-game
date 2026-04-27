@@ -948,7 +948,7 @@ function App() {
   const claimMismatchDedupeKeyRef = useRef("");
   useEffect(() => {
     if (actionState.kind === "idle") return;
-    // Payout success is pushed from the payout watcher effect so it always appears after the relayer line.
+    // Payout success is pushed from the payout watcher effect (not mirrored here) so it can attach the payout tx hash.
     if (actionState.kind === "success" && actionState.message === PAYOUT_SUCCESS_MESSAGE) {
       return;
     }
@@ -1187,8 +1187,8 @@ function App() {
   const lastPayoutEventFingerprint = useRef("");
 
   // When payout completes (after claim + relayer), update status, event log, and payout tx when found.
-  // Skip while `claimContract` is still sequencing UI (claim confirmed → relayer line); otherwise the
-  // async `pushEventLog` here can beat the actionState→event-log mirror and reorder messages.
+  // Skip while `claimContract` is still finishing so the async `pushEventLog` here does not reorder ahead
+  // of the mirrored “claim confirmed” line.
   useEffect(() => {
     if (!gameState?.claimed) {
       lastPayoutEventFingerprint.current = "";
@@ -1746,17 +1746,6 @@ function App() {
         txHash: tx.hash,
         steps: completeFlowSteps(CLAIM_STEP_DEFS),
       });
-
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 0);
-      });
-
-      setActionState({
-        kind: "pending",
-        message: "We are calling the NAC gateway to pay out the winner…",
-        txHash: tx.hash,
-        steps: completeFlowSteps(CLAIM_STEP_DEFS),
-      });
     } catch (error) {
       console.error("[claim] error:", error);
       const err = error as { code?: string; message?: string; shortMessage?: string };
@@ -2149,7 +2138,7 @@ function App() {
           <div className="game-layout">
             <aside className="game-stats">
               <div className="stat-row hero">
-                <div className="stat-l">Pot size</div>
+                <div className="stat-l">{sessionActive ? "Pot size" : "Pot size was"}</div>
                 <div className="stat-v hero-v">
                   <b>{gameState ? gameState.potDisplay : "—"}</b> <span>USDC</span>
                 </div>
