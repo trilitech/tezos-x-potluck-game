@@ -1873,7 +1873,7 @@ function App() {
           <main className="pl-landing">
             <section className="landing-copy">
               <h1 className="landing-h">
-                Native Atomic Composability
+                <span className="landing-h-primary">Native Atomic Composability</span>
                 <span className="landing-sub-h">comes to Tezos X.</span>
               </h1>
               <p className="landing-blurb">

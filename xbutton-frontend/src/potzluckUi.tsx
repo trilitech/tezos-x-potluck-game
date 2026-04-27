@@ -3,7 +3,158 @@ export function shortAddr(addr: string | null): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
+import { useEffect, useId, useRef, type AnimationEvent, type ReactNode } from "react";
+
+/** Small gold “lucky pot” for the topbar / brand mark. */
+export function PotzLuckPotIcon() {
+  const gid = useId().replace(/:/g, "");
+  return (
+    <svg className="potzluck-pot-icon" viewBox="0 0 24 24" aria-hidden>
+      <defs>
+        <linearGradient id={`${gid}-body`} x1="5" y1="5" x2="19" y2="21" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#fff6d4" />
+          <stop offset="35%" stopColor="#f0cd56" />
+          <stop offset="100%" stopColor="#a9720a" />
+        </linearGradient>
+        <linearGradient id={`${gid}-rim`} x1="5" y1="7" x2="19" y2="9" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#fff0b0" />
+          <stop offset="100%" stopColor="#d9a41e" />
+        </linearGradient>
+        <linearGradient id={`${gid}-shine`} x1="8" y1="9" x2="11" y2="16" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="rgba(255,255,255,0.55)" />
+          <stop offset="100%" stopColor="rgba(255,255,255,0)" />
+        </linearGradient>
+      </defs>
+      <ellipse cx="12" cy="7.75" rx="7.75" ry="2.35" fill={`url(#${gid}-rim)`} stroke="#8a6510" strokeWidth="0.35" />
+      <path
+        fill={`url(#${gid}-body)`}
+        stroke="#7a5a0c"
+        strokeWidth="0.4"
+        strokeLinejoin="round"
+        d="M4.35 8.35c-.15 5.2 2.35 10.2 7.65 11.15 5.3-.95 7.8-5.95 7.65-11.15l-1.35-.15H5.7l-1.35.15z"
+      />
+      <path
+        fill={`url(#${gid}-shine)`}
+        d="M6.2 9.5c.35 3.8 2.1 7.2 4.9 8.35.45-1.1.35-5.5-.35-8.35H6.2z"
+        opacity="0.9"
+      />
+      <path
+        fill="#fff8dc"
+        stroke="#c9a227"
+        strokeWidth="0.2"
+        d="M12 2.6l.55 1.35h1.45l-1.15.85.45 1.45L12 5.5l-1.3.95.45-1.45-1.15-.85h1.45L12 2.6z"
+      />
+    </svg>
+  );
+}
+
+export type EventLogTone = "info" | "success" | "error";
+export type EventLogEntry = { id: number; msg: string; tone: EventLogTone; txHash?: string };
+
+/** Longer phrases first so we do not link the wrong substring (e.g. "claim" inside "claimed"). */
+const TX_LINK_PHRASES = [
+  "session transaction",
+  "deposit transaction",
+  "approval transaction",
+  "claim transaction",
+  "payout transaction",
+  "payout complete",
+  "claim submitted",
+  "session",
+  "deposit",
+  "approval",
+] as const;
+
+function messageWithExplorerTx(
+  msg: string,
+  txHash: string | undefined,
+  evmTxUrl: (hash: string) => string,
+): ReactNode {
+  if (!txHash) return msg;
+  const url = evmTxUrl(txHash);
+  const lower = msg.toLowerCase();
+  for (const phrase of TX_LINK_PHRASES) {
+    const i = lower.indexOf(phrase);
+    if (i >= 0) {
+      const linked = msg.slice(i, i + phrase.length);
+      return (
+        <>
+          {msg.slice(0, i)}
+          <a href={url} target="_blank" rel="noopener noreferrer" className="explorer-link">
+            {linked}
+          </a>
+          {msg.slice(i + phrase.length)}
+        </>
+      );
+    }
+  }
+  return (
+    <>
+      {msg}{" "}
+      <a href={url} target="_blank" rel="noopener noreferrer" className="explorer-link">
+        View on explorer
+      </a>
+    </>
+  );
+}
+
 type PotState = "connect" | "wrong-net" | "idle" | "play" | "depositing" | "won";
+
+/** Full-screen-of-pot overlay: USDC coin drops into a pot, then the scene falls away. */
+export function DepositPotCelebration({ onComplete }: { onComplete: () => void }) {
+  const gid = useId().replace(/:/g, "");
+  const finished = useRef(false);
+
+  const finish = () => {
+    if (finished.current) return;
+    finished.current = true;
+    onComplete();
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      queueMicrotask(finish);
+      return;
+    }
+    const t = window.setTimeout(finish, 2800);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot safety timeout; onComplete is stable from parent
+  }, []);
+
+  const handleSceneAnimationEnd = (e: AnimationEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.animationName === "depositPotSceneExit") {
+      finish();
+    }
+  };
+
+  return (
+    <div className="deposit-pot-fx" aria-hidden>
+      <div className="deposit-pot-fx__scene" onAnimationEnd={handleSceneAnimationEnd}>
+        <div className="deposit-pot-fx__glow" />
+        <svg className="deposit-pot-fx__pot" viewBox="0 0 64 56" aria-hidden>
+          <defs>
+            <linearGradient id={`${gid}-potfx`} x1="10" y1="6" x2="54" y2="52" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stopColor="#fff6d4" />
+              <stop offset="38%" stopColor="#f0cd56" />
+              <stop offset="100%" stopColor="#8f6a12" />
+            </linearGradient>
+          </defs>
+          <ellipse cx="32" cy="13" rx="23" ry="6.5" fill={`url(#${gid}-potfx)`} stroke="#6a4f0c" strokeWidth="0.45" />
+          <path
+            fill={`url(#${gid}-potfx)`}
+            stroke="#5a4208"
+            strokeWidth="0.5"
+            strokeLinejoin="round"
+            d="M9 14.5Q9 40 32 51Q55 40 55 14.5L52.5 14H11.5L9 14.5z"
+          />
+        </svg>
+        <div className="deposit-pot-fx__coin" />
+      </div>
+    </div>
+  );
+}
 
 export function PotButton(props: {
   state: PotState;
@@ -71,7 +222,7 @@ export function PotButton(props: {
   );
 }
 
-export function EventLogStrip(props: { entries: { id: number; msg: string }[] }) {
+export function EventLogStrip(props: { entries: EventLogEntry[]; evmTxUrl: (hash: string) => string }) {
   const shown = props.entries.slice(-4);
   return (
     <div className="event-log-strip">
@@ -82,9 +233,9 @@ export function EventLogStrip(props: { entries: { id: number; msg: string }[] })
           const ageFromBottom = shown.length - 1 - i;
           const cls = ageFromBottom === 0 ? "fresh" : ageFromBottom === 1 ? "recent" : "older";
           return (
-            <div key={e.id} className={`el-line ${cls}`}>
+            <div key={e.id} className={`el-line ${cls} el-${e.tone}`}>
               <span className="el-tag">[EVENT LOG]</span>
-              <span className="el-msg">{e.msg}</span>
+              <span className="el-msg">{messageWithExplorerTx(e.msg, e.txHash, props.evmTxUrl)}</span>
             </div>
           );
         })
@@ -95,15 +246,15 @@ export function EventLogStrip(props: { entries: { id: number; msg: string }[] })
 
 export function PotFooter(props: {
   faucetUrl: string;
-  dashboardUrl: string;
   docsUrl: string;
-  gameExplorerUrl: string;
+  tezlinkUrl: string;
+  onOpenNetworkInfo: () => void;
 }) {
-  const { faucetUrl, dashboardUrl, docsUrl, gameExplorerUrl } = props;
+  const { faucetUrl, docsUrl, tezlinkUrl, onOpenNetworkInfo } = props;
   return (
     <footer className="pl-footer">
       <div className="foot-left">
-        <a href="https://twitter.com/tezos" target="_blank" rel="noopener noreferrer">
+        <a href="https://x.com/tezos" target="_blank" rel="noopener noreferrer">
           Twitter
         </a>
         <a href="https://discord.gg/tezos" target="_blank" rel="noopener noreferrer">
@@ -111,15 +262,15 @@ export function PotFooter(props: {
         </a>
       </div>
       <div className="foot-right">
-        <a href={gameExplorerUrl} target="_blank" rel="noopener noreferrer">
-          Tezlink (game)
+        <a href={tezlinkUrl} target="_blank" rel="noopener noreferrer">
+          Tezlink
         </a>
         <a href={docsUrl} target="_blank" rel="noopener noreferrer">
           Docs
         </a>
-        <a href={dashboardUrl} target="_blank" rel="noopener noreferrer">
+        <button type="button" className="footer-link-btn" onClick={onOpenNetworkInfo}>
           Network information
-        </a>
+        </button>
         <a href={faucetUrl} target="_blank" rel="noopener noreferrer">
           Faucet
         </a>

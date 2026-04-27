@@ -277,14 +277,25 @@ body {
 }
 .landing-h {
   margin: 0;
-  max-width: 12ch;
   margin-inline: auto;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
   font-size: clamp(2.5rem, 6vw, 4.6rem);
   line-height: 0.95;
   letter-spacing: -0.05em;
   font-weight: 600;
   color: var(--fg);
-  text-wrap: balance;
+}
+.landing-h-primary {
+  white-space: nowrap;
+}
+@media (max-width: 480px) {
+  .landing-h {
+    font-size: clamp(1.45rem, 5.8vw, 2.85rem);
+  }
 }
 .landing-sub-h {
   display: block;
@@ -1061,9 +1072,6 @@ body {
   }
   .landing-copy {
     gap: 16px;
-  }
-  .landing-h {
-    max-width: 11ch;
   }
   .pl-topbar {
     flex-direction: column;

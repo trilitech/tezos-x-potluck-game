@@ -1,10 +1,16 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
+
+declare global {
+  interface Window {
+    __potzTourGoToGame?: () => void;
+  }
+}
 
 const TOUR_STEPS = [
   { id: "what" as const, label: "What is Tezos X?" },
   { id: "why" as const, label: "Why Tezos X?" },
-  { id: "how" as const, label: "How the demo works" },
-  { id: "playing" as const, label: "Playing the game" },
+  { id: "how" as const, label: "PotzLuck and Native Atomic Composability" },
+  { id: "playing" as const, label: "How PotzLuck works" },
   { id: "behind" as const, label: "Behind the game" },
   { id: "oneness" as const, label: "EVM and Michelson as one" },
 ];
@@ -19,26 +25,51 @@ function Progress({ idx, total }: { idx: number; total: number }) {
   );
 }
 
+function TourIntro(props: { eyebrow?: string; title: string; body: ReactNode }) {
+  return (
+    <>
+      {props.eyebrow ? <div className="tour-eyebrow">{props.eyebrow}</div> : null}
+      <h2 className="tour-h">{props.title}</h2>
+      <p className="tour-sub">{props.body}</p>
+    </>
+  );
+}
+
 function StepWhat() {
   return (
     <>
-      <p className="tour-sub">
-        Tezos X lets your dApps run on <b>Etherlink</b> (EVM Interface) and <b>Tezlink</b> (Michelson Interface)
-        seamlessly without your users having to switch network or context. This is achieved through{" "}
-        <b>Native Atomic Composability</b>.
-      </p>
-      <div className="runtime-row">
+      <TourIntro
+        title="One app. Two interfaces. No context switch."
+        body={
+          <>
+            Tezos X lets your dApps run on <b>Etherlink</b> (EVM Interface) and <b>Tezlink</b> (Michelson Interface)
+            seamlessly without your users having to switch network or context. This is achieved through{" "}
+            <b>Native Atomic Composability (NAC)</b>. The <b>NAC gateway</b> on the <b>EVM interface</b> is how calls
+            reach Tezlink and update Michelson-interface storage while your users stay in an EVM-native flow.
+          </>
+        }
+      />
+      <div className="runtime-row runtime-row-bridge-layout">
         <div className="runtime-card">
-          <div className="runtime-name">
-            <span className="rt-dot evm" />
-            Etherlink
+          <div className="runtime-name runtime-name-etherlink">
+            <img
+              src="https://etherlink.com/logo-desktop.svg"
+              alt="Etherlink"
+              className="runtime-etherlink-logo"
+            />
           </div>
           <div className="runtime-sub">EVM Interface</div>
-          <div className="runtime-desc">Solidity contracts, MetaMask, USDC.</div>
         </div>
         <div className="runtime-bridge">
           <span className="bridge-line" />
-          <span className="bridge-label">NAC</span>
+          <span className="bridge-label nac-gateway-icon" aria-label="NAC Gateway">
+            <svg viewBox="0 0 48 48" aria-hidden="true">
+              <rect x="10" y="12" width="28" height="24" rx="6" />
+              <rect x="17" y="19" width="14" height="10" rx="2" />
+              <path d="M24 12v-4M16 12V8M32 12V8M24 40v-4M16 40v-4M32 40v-4M10 24H6M10 16H6M10 32H6M42 24h-4M42 16h-4M42 32h-4" />
+            </svg>
+            <span>NAC Gateway</span>
+          </span>
           <span className="bridge-line" />
         </div>
         <div className="runtime-card">
@@ -47,7 +78,6 @@ function StepWhat() {
             Tezlink
           </div>
           <div className="runtime-sub">Michelson Interface</div>
-          <div className="runtime-desc">Game logic, state, settlement.</div>
         </div>
       </div>
     </>
@@ -57,11 +87,30 @@ function StepWhat() {
 function StepWhy() {
   return (
     <>
-      <p className="tour-sub">
-        Tezos X allows you to tap into liquidity and new user pools on EVM and Michelson without rewriting your dApp
-        for different networks. You&apos;ll benefit from ultra-low latency provided by Etherlink and Tezlink while
-        still secured by Tezos L1
-      </p>
+      <TourIntro
+        title="More users and liquidity without rewriting your app."
+        body={
+          <>
+            Tezos X allows you to tap into liquidity and new user pools on EVM and Michelson without rewriting your
+            dApp for different networks. You&apos;ll benefit from ultra-low latency provided by Etherlink and Tezlink
+            while still secured by Tezos L1
+          </>
+        }
+      />
+      <div className="tour-points">
+        <div className="tour-point">
+          <span className="tour-point-k">Reach</span>
+          <span className="tour-point-v">liquidity and new user pools on EVM and Michelson</span>
+        </div>
+        <div className="tour-point">
+          <span className="tour-point-k">Keep</span>
+          <span className="tour-point-v">the same dApp instead of rewriting for different networks</span>
+        </div>
+        <div className="tour-point">
+          <span className="tour-point-k">Benefit</span>
+          <span className="tour-point-v">from ultra-low latency while still secured by Tezos L1</span>
+        </div>
+      </div>
     </>
   );
 }
@@ -69,11 +118,30 @@ function StepWhy() {
 function StepHow() {
   return (
     <>
-      <p className="tour-sub">
-        In this pay to play game, you&apos;ll deposit USDC tokens into an escrow contract on the EVM side, interact
-        with a game connected to an EVM contract, and this will instantly update the game state in Tezlink - where the
-        game state is being stored.
-      </p>
+      <TourIntro
+        title="You play on EVM, while the game state lives on Tezlink."
+        body={
+          <>
+            In this pay to play game, you&apos;ll deposit USDC tokens into an escrow contract on the EVM side,
+            interact with a game connected to an EVM contract, and this will instantly update the game state in
+            Tezlink.
+          </>
+        }
+      />
+      <div className="tour-points">
+        <div className="tour-point">
+          <span className="tour-point-k">Step 1</span>
+          <span className="tour-point-v">Deposit USDC into the escrow contract on the EVM side</span>
+        </div>
+        <div className="tour-point">
+          <span className="tour-point-k">Step 2</span>
+          <span className="tour-point-v">Interact with the game through the connected EVM contract</span>
+        </div>
+        <div className="tour-point">
+          <span className="tour-point-k">Step 3</span>
+          <span className="tour-point-v">The game state is instantly updated in Tezlink</span>
+        </div>
+      </div>
     </>
   );
 }
@@ -81,11 +149,37 @@ function StepHow() {
 function StepPlaying() {
   return (
     <>
-      <p className="tour-sub">
-        The game is simple. When you click &quot;Play&quot;, you deposit funds into the game&apos;s pot. The last
-        player to deposit into the pot before the session ends, wins. That player can then claim all the tokens in the
-        pot deposited by other players including their own deposit.
-      </p>
+      <TourIntro
+        title="Last deposit before the session ends wins."
+        body={
+          <>
+            The game is simple. When you click <b>&quot;Play&quot;</b>, you deposit funds into the game&apos;s pot.
+            The last player to deposit into the pot before the session ends, wins. That player can then claim all the
+            tokens in the pot deposited by other players including their own deposit.
+          </>
+        }
+      />
+      <div className="tour-points">
+        <div className="tour-point">
+          <span className="tour-point-k">Networks</span>
+          <span className="tour-point-v">
+            Add the <b>Tezos X</b> test network to your <b>EVM wallet</b> (Etherlink) and, if you use a native Tezos
+            wallet on Tezlink, add Tezos X there too—both need the chain to connect and play.
+          </span>
+        </div>
+        <div className="tour-point">
+          <span className="tour-point-k">Play</span>
+          <span className="tour-point-v">deposit funds into the game&apos;s pot</span>
+        </div>
+        <div className="tour-point">
+          <span className="tour-point-k">Winner</span>
+          <span className="tour-point-v">the last player to deposit before the session ends</span>
+        </div>
+        <div className="tour-point">
+          <span className="tour-point-k">Claim</span>
+          <span className="tour-point-v">all the tokens in the pot, including your own deposit</span>
+        </div>
+      </div>
     </>
   );
 }
@@ -93,12 +187,31 @@ function StepPlaying() {
 function StepBehind() {
   return (
     <>
-      <p className="tour-sub">
-        When you click the &quot;Play&quot; button, if there are no existing game sessions, a new game starts for a
-        5min session. 1 USDC is deposited into the game escrow contract. Once your deposit is detected, a small
-        relayer service calls the NAC gateway from the EVM side telling it your wallet address. The NAC gateway calls
-        the game storage contract in Michelson to update the game state.
-      </p>
+      <TourIntro
+        title="A relayer and the NAC gateway keep the state in sync."
+        body={
+          <>
+            When you click the &quot;Play&quot; button, if there are no existing game sessions, a new game starts for
+            a 5min session. 1 USDC is deposited into the game escrow contract. Once your deposit is detected, a small
+            relayer service calls the NAC gateway from the EVM side telling it your wallet address. The NAC gateway
+            calls the game storage contract in Michelson to update the game state.
+          </>
+        }
+      />
+      <div className="tour-points">
+        <div className="tour-point">
+          <span className="tour-point-k">No session?</span>
+          <span className="tour-point-v">a new 5min game starts first</span>
+        </div>
+        <div className="tour-point">
+          <span className="tour-point-k">Deposit</span>
+          <span className="tour-point-v">1 USDC goes into the game escrow contract</span>
+        </div>
+        <div className="tour-point">
+          <span className="tour-point-k">Sync</span>
+          <span className="tour-point-v">the relayer calls the NAC gateway, which updates game state in Michelson</span>
+        </div>
+      </div>
     </>
   );
 }
@@ -106,10 +219,22 @@ function StepBehind() {
 function StepOneness() {
   return (
     <>
-      <p className="tour-sub">
-        Connect any of your wallets on the EVM interface of Tezos X and on the Tezlink interface of Tezos X and your
-        experience should be exactly the same. That&apos;s the power of Tezos X. Try it now in the game.
-      </p>
+      <TourIntro
+        title="Same game experience across Tezos X interfaces."
+        body={
+          <>
+            Connect with a wallet on either the EVM interface (Etherlink) or the Michelson interface (Tezlink)—your
+            experience stays the same. That&apos;s the power of Tezos X.
+            <br />
+            <br />
+            Use a <b>native Tezos wallet</b> and we&apos;ll create an <b>EVM alias</b> for you. You can use dApps on
+            Etherlink without installing a separate EVM-only wallet.{" "}
+            <button type="button" className="link-btn inline" onClick={window.__potzTourGoToGame}>
+              Try it in the game →
+            </button>
+          </>
+        }
+      />
     </>
   );
 }
@@ -135,6 +260,13 @@ export function PotzTour({ open, stepIdx, onNext, onBack, onClose, onEndGoToGame
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [open, onNext, onBack, onClose]);
+
+  useEffect(() => {
+    window.__potzTourGoToGame = onEndGoToGame;
+    return () => {
+      delete window.__potzTourGoToGame;
+    };
+  }, [onEndGoToGame]);
 
   if (!open) return null;
   const step = TOUR_STEPS[stepIdx];
@@ -180,11 +312,11 @@ export function PotzTour({ open, stepIdx, onNext, onBack, onClose, onEndGoToGame
           </button>
           <div className="actions" style={{ display: "flex", gap: 8 }}>
             {!isFirst ? (
-              <button type="button" className="btn ghost" onClick={onBack}>
+              <button type="button" className="btn ghost tour-nav-btn" onClick={onBack}>
                 Back
               </button>
             ) : null}
-            <button type="button" className="btn primary" onClick={isLast ? onEndGoToGame : onNext}>
+            <button type="button" className="btn primary tour-nav-btn" onClick={isLast ? onEndGoToGame : onNext}>
               {isLast ? "Play Game" : "Next"}
               <span className="kbd">↵</span>
             </button>
