@@ -14,6 +14,7 @@ import {
   type EventLogEntry,
   type EventLogTone,
 } from "./potzluckUi";
+import { TEZOSX_EVM_TESTNET_NAME } from "./tezosxNetwork";
 
 const evmRpc = import.meta.env.VITE_EVM_RPC ?? "https://demo.txpark.nomadic-labs.com/rpc";
 const tezlinkRpc = import.meta.env.VITE_TEZLINK_RPC ?? "https://demo.txpark.nomadic-labs.com/rpc/tezlink";
@@ -42,17 +43,16 @@ const DEFAULT_AIRDROP_API_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/api/
 const airdropApiUrl = import.meta.env.VITE_AIRDROP_API_URL?.trim() || DEFAULT_AIRDROP_API_URL;
 
 /** Shown in status + event log when Michelson storage reports payout completed (deduped in payout effect). */
-const PAYOUT_SUCCESS_MESSAGE =
-  "Payout complete. The relayer finished paying the winner; their USDC balance should update shortly.";
+const PAYOUT_SUCCESS_MESSAGE = "The winner has been paid.";
 const AIRDROP_USDC_AMOUNT = "5";
 const AIRDROP_XTZ_AMOUNT = "5";
 
 function airdropDeliveredLogMessage(usdc: boolean, xtz: boolean): string {
   if (usdc && xtz) {
-    return `Airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC and ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
+    return `Testnet airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC and ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
   }
-  if (usdc) return `Airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC sent to your wallet.`;
-  return `Airdrop complete: ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
+  if (usdc) return `Testnet airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC sent to your wallet.`;
+  return `Testnet airdrop complete: ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
 }
 
 const tzktApiUrl = tezlinkRpc.replace(/\/rpc\/tezlink\/?$/, "") + "/tzkt";
@@ -87,7 +87,7 @@ const TEZOS_X_TESTNET_DASHBOARD_URL = "https://demo.txpark.nomadic-labs.com/";
 const POTZ_DOCS_URL = import.meta.env.VITE_DOCS_URL ?? "https://tezos.com/tezos-x/";
 const TEZLINK_SITE_URL = import.meta.env.VITE_TEZLINK_SITE_URL ?? "https://tezlink.tezos.com/";
 const NETWORK_INFO = {
-  testnetName: "demo",
+  testnetName: TEZOSX_EVM_TESTNET_NAME,
   deployedBy: "foucaultaurelien",
   created: "2026-04-22 10:19:00 UTC",
   evmNodeVersion: "649d7e6a",
@@ -100,21 +100,9 @@ const NETWORK_INFO = {
   dashboardUrl: "https://demo.txpark.nomadic-labs.com/",
 } as const;
 
-function evmAddressUrl(address: string) {
-  return `${CONFIG.evmExplorerUrl}/address/${address}`;
-}
-
-function evmTokenUrl(address: string) {
-  return `${CONFIG.evmExplorerUrl}/token/${address}`;
-}
-
 function evmTxUrl(hash: string) {
   const h = hash.startsWith("0x") ? hash : `0x${hash}`;
   return `${CONFIG.evmExplorerUrl}/tx/${h}`;
-}
-
-function tezosContractUrl(address: string) {
-  return `${CONFIG.tezosExplorerBase}/${address}?tzkt_api_url=${encodeURIComponent(CONFIG.tzktApiUrl)}`;
 }
 
 /** Tezlink tzkt: contract (or rollup) operations list — e.g. `…/BLS2…/operations` or `…/KT1…/operations`. */
@@ -140,14 +128,6 @@ async function fetchLatestTezosOpExplorerUrl(): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-function isEvmAddress(value: string) {
-  return /^0x[a-fA-F0-9]{40}$/.test(value);
-}
-
-function isTezosAddress(value: string) {
-  return /^(tz1|tz2|tz3|KT1)[1-9A-HJ-NP-Za-km-z]{33}$/.test(value);
 }
 
 const ERC20_ABI = [
@@ -194,6 +174,12 @@ function encodeMichelineInt(value: number): string {
 }
 
 const PRESS_AMOUNT_UNITS = ethers.parseUnits(CONFIG.pressAmount, CONFIG.usdcDecimals);
+
+/**
+ * Allowance we `approve` for the escrow. Max uint means one signature can cover many deposits;
+ * each `deposit` call still only transfers `PRESS_AMOUNT_UNITS` (wallets usually show this as unlimited).
+ */
+const USDC_ESCROW_APPROVE_CAP = ethers.MaxUint256;
 
 type GameStorageJsonNode = {
   prim?: string;
@@ -265,19 +251,18 @@ function pressStepDefs(needsApproval: boolean): FlowStepDef[] {
             id: "approve",
             label: "Approve USDC for the escrow",
             detail:
-              "Your wallet prompts you to let the escrow contract pull USDC. Only the amount you approve can move.",
+              "Your wallet sets how much USDC the escrow may pull. We use a high allowance so you only sign this once; each play still moves just the stake.",
           },
         ]
       : []),
     {
       id: "wallet_deposit",
       label: "Deposit 1 USDC into the escrow",
-      detail:
-        "You confirm a deposit on the escrow contract. USDC moves into the game pot on Tezos X EVM.",
+      detail: `You confirm a deposit on the escrow contract. USDC moves into the game pot on ${TEZOSX_EVM_TESTNET_NAME}.`,
     },
     {
       id: "evm_confirm",
-      label: "Waiting for confirmation from the Tezos X EVM network",
+      label: `Waiting for confirmation from ${TEZOSX_EVM_TESTNET_NAME}`,
       detail: "The network confirms your deposit transaction.",
     },
     {
@@ -304,7 +289,7 @@ const CLAIM_STEP_DEFS: FlowStepDef[] = [
   },
   {
     id: "evm_claim",
-    label: "Waiting for confirmation from the Tezos X EVM network",
+    label: `Waiting for confirmation from ${TEZOSX_EVM_TESTNET_NAME}`,
     detail: "After the claim is confirmed, the relayer sees it and pays the winnings from the escrow pot to your wallet in USDC.",
   },
 ];
@@ -316,7 +301,7 @@ const START_SESSION_STEP_DEFS: FlowStepDef[] = [
   },
   {
     id: "evm_start",
-    label: "Waiting for confirmation from the Tezos X EVM network",
+    label: `Waiting for confirmation from ${TEZOSX_EVM_TESTNET_NAME}`,
   },
 ];
 
@@ -443,8 +428,12 @@ function getEthereum(): EthereumProvider | undefined {
   return window.ethereum as EthereumProvider | undefined;
 }
 
-const TEZOS_X_EVM_WALLET_HINT =
-  "Your wallet does not look like it is on Tezos X EVM yet. Add or switch to that network, then try again.";
+const TEZOS_X_EVM_WALLET_HINT = `Your wallet does not look like it is on ${TEZOSX_EVM_TESTNET_NAME} yet. Add or switch to that network, then try again.`;
+
+/** Logged directly to the event strip; action→log mirror skips this prefix to avoid duplicates. */
+const CLAIM_MISMATCH_LOG_PREFIX = "Only the last person who pressed can claim.";
+
+const CONNECT_WALLET_CHECKING_MSG = "Connecting your wallet and checking your Tezos X balances…";
 
 function isUserRejectedWalletError(error: unknown): boolean {
   const e = error as { code?: number | string };
@@ -459,38 +448,6 @@ function isBadContractRpcResultError(error: unknown): boolean {
     err?.code === "BAD_DATA" ||
     text.includes("bad_data") ||
     text.includes("could not decode result data")
-  );
-}
-
-function shortenAddress(value: string | null, size = 6) {
-  if (!value) return "Not connected";
-  return `${value.slice(0, size)}...${value.slice(-4)}`;
-}
-
-function ExplorableAddress({
-  address,
-  displayText,
-  type = "address",
-}: {
-  address: string | null;
-  displayText?: string;
-  type?: "address" | "token" | "contract";
-}) {
-  if (!address) return <>{displayText ?? "-"}</>;
-  const text = displayText ?? shortenAddress(address, 8);
-  const href =
-    type === "token" && isEvmAddress(address)
-      ? evmTokenUrl(address)
-      : isEvmAddress(address)
-        ? evmAddressUrl(address)
-        : isTezosAddress(address)
-          ? tezosContractUrl(address)
-          : null;
-  if (!href) return <>{text}</>;
-  return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="explorer-link">
-      {text}
-    </a>
   );
 }
 
@@ -767,7 +724,7 @@ function formatPressButtonError(error: unknown): string {
     parts.includes("estimategas")
   ) {
     return (
-      "The deposit did not go through. Most often you need at least 1 USDC, the right network (Tezos X EVM), " +
+      `The deposit did not go through. Most often you need at least 1 USDC, the right network (${TEZOSX_EVM_TESTNET_NAME}), ` +
       "and an approval if the wallet asked for one."
     );
   }
@@ -825,8 +782,8 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
     parts.includes("estimategas")
   ) {
     return kind === "claim"
-      ? "The claim did not send. Check gas, that you are on Tezos X EVM, then refresh and try again."
-      : "Could not start a new session. Check gas and that you are on Tezos X EVM, then try again.";
+      ? `The claim did not send. Check gas, that you are on ${TEZOSX_EVM_TESTNET_NAME}, then refresh and try again.`
+      : `Could not start a new session. Check gas and that you are on ${TEZOSX_EVM_TESTNET_NAME}, then try again.`;
   }
 
   return (e?.shortMessage ?? e?.message ?? (kind === "claim" ? "Claim failed." : "Start session failed.")).trim();
@@ -837,7 +794,7 @@ function formatAirdropError(error: unknown): string {
   if (message.startsWith("AIRDROP_FAILED:")) {
     return message.replace("AIRDROP_FAILED:", "").trim() || "Airdrop failed.";
   }
-  return "We couldn't airdrop starter funds right now. Please try again in a moment.";
+  return "We couldn't send testnet funds right now. Please try again in a moment.";
 }
 
 function PotzLuckMark() {
@@ -857,7 +814,8 @@ function App() {
     usdcBalanceRaw: null,
     xtzBalanceRaw: null,
   });
-  const [isWalletDisconnected, setIsWalletDisconnected] = useState(false);
+  /** When true, `refreshWalletState(false)` returns an empty wallet (user chose Disconnect). Ref is synchronous so connect + airdrop never races React state. */
+  const isWalletDisconnectedRef = useRef(false);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [gameStateError, setGameStateError] = useState<string | null>(null);
   const [walletError, setWalletError] = useState<string | null>(null);
@@ -986,10 +944,21 @@ function App() {
   }, [gameState, ringTick]);
 
   const lastEventLogKey = useRef("");
+  /** Dedupes passive vs claim-click logs for “only last player can claim”. */
+  const claimMismatchDedupeKeyRef = useRef("");
   useEffect(() => {
     if (actionState.kind === "idle") return;
     // Payout success is pushed from the payout watcher effect so it always appears after the relayer line.
     if (actionState.kind === "success" && actionState.message === PAYOUT_SUCCESS_MESSAGE) {
+      return;
+    }
+    if (actionState.kind === "error" && actionState.message.startsWith(CLAIM_MISMATCH_LOG_PREFIX)) {
+      return;
+    }
+    if (actionState.kind === "error" && actionState.message === TEZOS_X_EVM_WALLET_HINT) {
+      return;
+    }
+    if (actionState.kind === "pending" && actionState.message === CONNECT_WALLET_CHECKING_MSG) {
       return;
     }
     const key = `${actionState.kind}:${actionState.message}:${actionState.txHash ?? ""}:${actionState.tezosOpsUrl ?? ""}`;
@@ -1025,7 +994,7 @@ function App() {
   }, []);
 
   const refreshWalletState = useCallback(async (requestAccounts = false) => {
-    if (isWalletDisconnected && !requestAccounts) {
+    if (isWalletDisconnectedRef.current && !requestAccounts) {
       const emptyState = {
         address: null,
         chainId: null,
@@ -1147,7 +1116,7 @@ function App() {
       setWalletState(emptyState);
       return emptyState;
     }
-  }, [isWalletDisconnected]);
+  }, []);
 
   const refreshGameState = useCallback(async () => {
     try {
@@ -1179,6 +1148,40 @@ function App() {
       return null;
     },
     [refreshGameState],
+  );
+
+  /** When already on TezosX EVM Testnet: top up USDC/XTZ via airdrop API if balances are zero. */
+  const ensureTestnetFundsIfNeeded = useCallback(
+    async (wallet: WalletState): Promise<{ willAirdrop: boolean; needsUsdc: boolean; needsXtz: boolean }> => {
+      if (!wallet.address || wallet.chainId !== CONFIG.chainId) {
+        return { willAirdrop: false, needsUsdc: false, needsXtz: false };
+      }
+      const needsUsdcAirdrop =
+        wallet.usdcBalanceRaw == null || wallet.usdcBalanceRaw === 0n;
+      const needsXtzAirdrop =
+        wallet.xtzBalanceRaw == null || wallet.xtzBalanceRaw === 0n;
+      const willAirdrop = needsUsdcAirdrop || needsXtzAirdrop;
+      if (!willAirdrop) {
+        return { willAirdrop: false, needsUsdc: false, needsXtz: false };
+      }
+      setActionState({
+        kind: "pending",
+        message: "Your wallet needs testnet USDC or XTZ — requesting an airdrop…",
+      });
+      await requestAirdrop(wallet.address, {
+        xtz: needsXtzAirdrop,
+        usdc: needsUsdcAirdrop,
+      });
+      await refreshWalletState(false);
+      pushEventLog(airdropDeliveredLogMessage(needsUsdcAirdrop, needsXtzAirdrop), "success");
+      setAirdropModalState({
+        open: true,
+        xtz: needsXtzAirdrop,
+        usdc: needsUsdcAirdrop,
+      });
+      return { willAirdrop: true, needsUsdc: needsUsdcAirdrop, needsXtz: needsXtzAirdrop };
+    },
+    [refreshWalletState, pushEventLog],
   );
 
   const lastPayoutEventFingerprint = useRef("");
@@ -1263,12 +1266,12 @@ function App() {
     }
 
     const handleAccountsChanged = () => {
-      setIsWalletDisconnected(false);
+      isWalletDisconnectedRef.current = false;
       void refreshWalletState(false);
     };
 
     const handleChainChanged = () => {
-      setIsWalletDisconnected(false);
+      isWalletDisconnectedRef.current = false;
       void refreshWalletState(false);
     };
 
@@ -1285,17 +1288,20 @@ function App() {
   async function connectWallet() {
     setWalletError(null);
     setIsConnecting(true);
-    setIsWalletDisconnected(false);
+    isWalletDisconnectedRef.current = false;
+    pushEventLog(CONNECT_WALLET_CHECKING_MSG, "info");
     setActionState({
       kind: "pending",
-      message: "Connecting your wallet and checking your Tezos X balances…",
+      message: CONNECT_WALLET_CHECKING_MSG,
     });
     let willAirdrop = false;
-    let needsUsdcAirdrop = false;
-    let needsXtzAirdrop = false;
     try {
       const connectedWallet = await refreshWalletState(true);
       if (!connectedWallet?.address) {
+        pushEventLog(
+          "No wallet account was connected (you may have closed the wallet prompt). Press Connect on the pot when you are ready to try again.",
+          "info",
+        );
         setActionState({
           kind: "idle",
           message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
@@ -1304,6 +1310,7 @@ function App() {
       }
 
       if (connectedWallet.chainId !== CONFIG.chainId) {
+        pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
         setActionState({
           kind: "error",
           message: TEZOS_X_EVM_WALLET_HINT,
@@ -1311,31 +1318,10 @@ function App() {
         return;
       }
 
-      needsUsdcAirdrop =
-        connectedWallet.usdcBalanceRaw == null || connectedWallet.usdcBalanceRaw === 0n;
-      needsXtzAirdrop =
-        connectedWallet.xtzBalanceRaw == null || connectedWallet.xtzBalanceRaw === 0n;
-      willAirdrop = needsUsdcAirdrop || needsXtzAirdrop;
+      const funded = await ensureTestnetFundsIfNeeded(connectedWallet);
+      willAirdrop = funded.willAirdrop;
 
-      if (willAirdrop) {
-        setActionState({
-          kind: "pending",
-          message: "Your wallet is low on starter funds, so we're preparing an airdrop…",
-        });
-        await requestAirdrop(connectedWallet.address, {
-          xtz: needsXtzAirdrop,
-          usdc: needsUsdcAirdrop,
-        });
-        await refreshWalletState(false);
-        pushEventLog(airdropDeliveredLogMessage(needsUsdcAirdrop, needsXtzAirdrop), "success");
-      }
-
-      pushEventLog(
-        "You're on Tezos X with funds to play — opening a round (if needed) and depositing 1 USDC into the pot.",
-        "info",
-      );
-
-      let latestGameState = await refreshGameState();
+      const latestGameState = await refreshGameState();
       if (!latestGameState) {
         setActionState({
           kind: "error",
@@ -1344,37 +1330,17 @@ function App() {
         return;
       }
 
-      const nowSec = Math.floor(Date.now() / 1000);
-      const hasActiveSession = latestGameState.sessionEnd > nowSec && !latestGameState.claimed;
+      pushEventLog(
+        willAirdrop
+          ? "Testnet funds are in your wallet. Click Play when you are ready to open or join a round and deposit."
+          : "Wallet connected on Tezos X. Click Play when you are ready to deposit or start a new round.",
+        "info",
+      );
 
-      if (!hasActiveSession) {
-        setActionState({
-          kind: "pending",
-          message: "No active session is running, so we're opening a fresh round for you…",
-        });
-        const started = await startNewSession();
-        if (!started) return;
-        const active = await waitForActiveRound();
-        if (!active) {
-          setActionState({
-            kind: "error",
-            message:
-              "New session was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
-          });
-          return;
-        }
-        latestGameState = active;
-      }
-
-      await pressButton();
-
-      if (willAirdrop) {
-        setAirdropModalState({
-          open: true,
-          xtz: needsXtzAirdrop,
-          usdc: needsUsdcAirdrop,
-        });
-      }
+      setActionState({
+        kind: "idle",
+        message: `Click Play to start or join a round and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
+      });
     } catch (error) {
       if (error instanceof Error && (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))) {
         setActionState({ kind: "error", message: formatAirdropError(error) });
@@ -1384,6 +1350,37 @@ function App() {
     } finally {
       setIsConnecting(false);
     }
+  }
+
+  async function runAfterNetworkSwitchToTezosX() {
+    isWalletDisconnectedRef.current = false;
+    const w = await refreshWalletState(false);
+    if (!w.address || w.chainId !== CONFIG.chainId) {
+      return;
+    }
+    pushEventLog(
+      `${TEZOSX_EVM_TESTNET_NAME} is now selected in your wallet — checking balances for testnet funds…`,
+      "info",
+    );
+    const { willAirdrop } = await ensureTestnetFundsIfNeeded(w);
+    const latestGameState = await refreshGameState();
+    if (!latestGameState) {
+      setActionState({
+        kind: "error",
+        message: "Could not load game state. Refresh and try again.",
+      });
+      return;
+    }
+    pushEventLog(
+      willAirdrop
+        ? "Testnet funds are in your wallet. Click Play when you are ready to open or join a round and deposit."
+        : `Network ready on ${TEZOSX_EVM_TESTNET_NAME}. Click Play when you are ready to deposit or start a new round.`,
+      "info",
+    );
+    setActionState({
+      kind: "idle",
+      message: `Click Play to start or join a round and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
+    });
   }
 
   async function disconnectWallet() {
@@ -1398,7 +1395,7 @@ function App() {
         // wallet_revokePermissions may not be supported by all wallets
       }
     }
-    setIsWalletDisconnected(true);
+    isWalletDisconnectedRef.current = true;
     setWalletError(null);
     setWalletState({
       address: null,
@@ -1432,7 +1429,7 @@ function App() {
           params: [
             {
               chainId: CONFIG.chainIdHex,
-              chainName: "TezosX EVM",
+              chainName: TEZOSX_EVM_TESTNET_NAME,
               rpcUrls: [CONFIG.evmRpc],
               nativeCurrency: {
                 name: "XTZ",
@@ -1447,7 +1444,15 @@ function App() {
       }
     }
 
-    await refreshWalletState(false);
+    try {
+      await runAfterNetworkSwitchToTezosX();
+    } catch (error) {
+      if (error instanceof Error && (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))) {
+        setActionState({ kind: "error", message: formatAirdropError(error) });
+      } else {
+        throw error;
+      }
+    }
   }
 
   async function waitForGameStateUpdate(
@@ -1503,8 +1508,7 @@ function App() {
       return;
     }
 
-    // Read balances/address from the wallet RPC, not from React state: connectWallet can call this
-    // immediately after refreshWalletState(), before a re-render commits walletState.
+    // Read balances/address from the wallet RPC, not from React state so we do not rely on a stale render.
     const latestWallet = await refreshWalletState(false);
     if (!latestWallet.address) {
       setActionState({ kind: "error", message: "Connect your wallet before pressing the button." });
@@ -1512,7 +1516,7 @@ function App() {
     }
 
     if (latestWallet.chainId !== CONFIG.chainId) {
-      setActionState({ kind: "error", message: "Switch your wallet to TezosX EVM first." });
+      setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_TESTNET_NAME} first.` });
       return;
     }
 
@@ -1550,10 +1554,10 @@ function App() {
           steps: markFlowSteps(depositSteps, "approve"),
         });
         const usdc = new ethers.Contract(CONFIG.usdcAddress, ERC20_ABI, signer);
-        const approveTx = await usdc.approve(CONFIG.potAddress, PRESS_AMOUNT_UNITS);
+        const approveTx = await usdc.approve(CONFIG.potAddress, USDC_ESCROW_APPROVE_CAP);
         setActionState({
           kind: "pending",
-          message: "Waiting for your approval transaction to confirm on Tezos X EVM…",
+          message: `Waiting for your approval transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
           steps: markFlowSteps(depositSteps, "approve"),
           txHash: approveTx.hash,
         });
@@ -1571,7 +1575,7 @@ function App() {
       const tx = await escrow.deposit(PRESS_AMOUNT_UNITS);
       setActionState({
         kind: "pending",
-        message: "Waiting for your deposit transaction to confirm on Tezos X EVM…",
+        message: `Waiting for your deposit transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
         steps: markFlowSteps(depositSteps, "evm_confirm"),
         txHash: tx.hash,
       });
@@ -1612,7 +1616,7 @@ function App() {
     }
 
     if (!onExpectedNetwork) {
-      setActionState({ kind: "error", message: "Switch your wallet to TezosX EVM first." });
+      setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_TESTNET_NAME} first.` });
       return;
     }
 
@@ -1653,9 +1657,15 @@ function App() {
       // last_player_evm is stored in the contract.
       if (currentState?.lastPlayerAddress && walletState.address) {
         if (walletState.address.toLowerCase() !== currentState.lastPlayerAddress.toLowerCase()) {
+          const logMsg = `Only the last person who pressed can claim. Winner wallet: ${shortAddr(currentState.lastPlayerAddress)}.`;
+          const key = `${currentState.sessionEnd}-${currentState.lastPlayerAddress}-${walletState.address}`;
+          if (claimMismatchDedupeKeyRef.current !== key) {
+            pushEventLog(logMsg, "error");
+            claimMismatchDedupeKeyRef.current = key;
+          }
           setActionState({
             kind: "error",
-            message: `Only the last person who pressed can claim. Expected ${currentState.lastPlayerAddress}, but this wallet is ${walletState.address}.`,
+            message: logMsg,
           });
           setIsClaiming(false);
           return;
@@ -1681,7 +1691,7 @@ function App() {
 
       setActionState({
         kind: "pending",
-        message: "Waiting for your claim transaction to confirm on Tezos X EVM…",
+        message: `Waiting for your claim transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
         steps: markFlowSteps(CLAIM_STEP_DEFS, "evm_claim"),
         txHash: tx.hash,
       });
@@ -1691,7 +1701,7 @@ function App() {
 
       setActionState({
         kind: "success",
-        message: "Your claim transaction is confirmed on Tezos X EVM.",
+        message: `Your claim transaction is confirmed on ${TEZOSX_EVM_TESTNET_NAME}.`,
         txHash: tx.hash,
         steps: completeFlowSteps(CLAIM_STEP_DEFS),
       });
@@ -1745,12 +1755,14 @@ function App() {
     }
   }
 
-  async function startNewSession() {
+  async function startNewSession(options?: { continueWithDeposit?: boolean }) {
     const ethereum = getEthereum();
     if (!ethereum) {
-      setActionState({ kind: "error", message: "Connect your wallet and switch to TezosX EVM." });
+      setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_TESTNET_NAME}.` });
       return false;
     }
+    const continueWithDeposit = Boolean(options?.continueWithDeposit);
+    let leaveStartingSessionFlag = false;
     setIsStartingSession(true);
     setActionState({
       kind: "pending",
@@ -1762,7 +1774,7 @@ function App() {
       const accounts = (await provider.send("eth_accounts", [])) as string[];
       const network = await provider.getNetwork();
       if (accounts.length === 0 || network.chainId !== CONFIG.chainId) {
-        setActionState({ kind: "error", message: "Connect your wallet and switch to TezosX EVM." });
+        setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_TESTNET_NAME}.` });
         return false;
       }
       const signer = await provider.getSigner();
@@ -1776,18 +1788,28 @@ function App() {
       );
       setActionState({
         kind: "pending",
-        message: "Waiting for your session transaction to confirm on Tezos X EVM…",
+        message: `Waiting for your session transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
         steps: markFlowSteps(START_SESSION_STEP_DEFS, "evm_start"),
         txHash: tx.hash,
       });
       await tx.wait();
       await refreshGameState();
-      setActionState({
-        kind: "success",
-        message: `New session started (${DEFAULT_SESSION_DURATION_SEC / 60} min). Click Play to deposit ${CONFIG.pressAmount} USDC into the pot.`,
-        txHash: tx.hash,
-        steps: completeFlowSteps(START_SESSION_STEP_DEFS),
-      });
+      if (continueWithDeposit) {
+        leaveStartingSessionFlag = true;
+        setActionState({
+          kind: "pending",
+          message: `New session started (${DEFAULT_SESSION_DURATION_SEC / 60} min). Syncing the round, then continuing to your USDC approval and deposit…`,
+          txHash: tx.hash,
+          steps: completeFlowSteps(START_SESSION_STEP_DEFS),
+        });
+      } else {
+        setActionState({
+          kind: "success",
+          message: `New session started (${DEFAULT_SESSION_DURATION_SEC / 60} min). Click Play to deposit ${CONFIG.pressAmount} USDC into the pot.`,
+          txHash: tx.hash,
+          steps: completeFlowSteps(START_SESSION_STEP_DEFS),
+        });
+      }
       return true;
     } catch (error) {
       const err = error as { code?: string; message?: string; shortMessage?: string };
@@ -1798,12 +1820,14 @@ function App() {
       setActionState({
         kind: "error",
         message: isRevert
-          ? "Could not start a new session. Refresh, check you are on Tezos X EVM, and try again."
+          ? `Could not start a new session. Refresh, check you are on ${TEZOSX_EVM_TESTNET_NAME}, and try again.`
           : formatGatewayError(error, "start_session"),
       });
       return false;
     } finally {
-      setIsStartingSession(false);
+      if (!leaveStartingSessionFlag) {
+        setIsStartingSession(false);
+      }
     }
   }
 
@@ -1857,17 +1881,21 @@ function App() {
       return;
     }
     if (potUiState === "idle") {
-      const started = await startNewSession();
+      const started = await startNewSession({ continueWithDeposit: true });
       if (!started) return;
-      const active = await waitForActiveRound();
-      if (active) {
+      try {
+        const active = await waitForActiveRound();
+        if (!active) {
+          setActionState({
+            kind: "error",
+            message:
+              "New session was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
+          });
+          return;
+        }
         await pressButton();
-      } else {
-        setActionState({
-          kind: "error",
-          message:
-            "New session was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
-        });
+      } finally {
+        setIsStartingSession(false);
       }
       return;
     }
@@ -1876,17 +1904,21 @@ function App() {
       return;
     }
     if (potUiState === "won") {
-      const started = await startNewSession();
+      const started = await startNewSession({ continueWithDeposit: true });
       if (!started) return;
-      const active = await waitForActiveRound();
-      if (active) {
+      try {
+        const active = await waitForActiveRound();
+        if (!active) {
+          setActionState({
+            kind: "error",
+            message:
+              "New session was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
+          });
+          return;
+        }
         await pressButton();
-      } else {
-        setActionState({
-          kind: "error",
-          message:
-            "New session was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
-        });
+      } finally {
+        setIsStartingSession(false);
       }
     }
   }, [potUiState, connectWallet, switchNetwork, startNewSession, pressButton, waitForActiveRound]);
@@ -1896,7 +1928,7 @@ function App() {
       case "connect":
         return { label: "Connect", sub: "wallet to play" };
       case "wrong-net":
-        return { label: "Add Tezos X", sub: "network" };
+        return { label: "Add", sub: TEZOSX_EVM_TESTNET_NAME };
       case "idle":
         return { label: "Play", sub: null };
       case "play":
@@ -1920,7 +1952,9 @@ function App() {
   }, [gameState?.lastPlayerAddress, gameState?.lastPlayerTezos]);
 
   const hasGameStatus =
-    !hasInjectedWallet || Boolean(walletError) || Boolean(gameStateError);
+    !hasInjectedWallet ||
+    Boolean(gameStateError) ||
+    (Boolean(walletError) && walletError !== TEZOS_X_EVM_WALLET_HINT);
 
   if (shellView === "landing") {
     return (
@@ -2137,35 +2171,9 @@ function App() {
                   No wallet detected. Install MetaMask and reload.
                 </p>
               ) : null}
-              {walletError ? (
-                walletError === TEZOS_X_EVM_WALLET_HINT ? (
-                  <p className="side-note" style={{ color: "var(--amber)" }}>
-                    {TEZOS_X_EVM_WALLET_HINT}{" "}
-                    <a
-                      href={NETWORK_INFO.dashboardUrl}
-                      className="explorer-link"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        setNetworkInfoOpen(true);
-                      }}
-                    >
-                      See network information
-                    </a>
-                    .
-                  </p>
-                ) : (
-                  <p className="side-note" style={{ color: "var(--amber)" }}>
-                    {walletError}
-                  </p>
-                )
-              ) : null}
-              {gameState?.claimed &&
-                walletState.address &&
-                gameState.lastPlayerAddress &&
-                walletState.address.toLowerCase() !== gameState.lastPlayerAddress.toLowerCase() ? (
+              {walletError && walletError !== TEZOS_X_EVM_WALLET_HINT ? (
                 <p className="side-note" style={{ color: "var(--amber)" }}>
-                  Only the last person who pressed can claim. Winner wallet:{" "}
-                  <ExplorableAddress address={gameState.lastPlayerAddress} />.
+                  {walletError}
                 </p>
               ) : null}
               {gameStateError ? <p className="side-note" style={{ color: "var(--amber)" }}>{gameStateError}</p> : null}

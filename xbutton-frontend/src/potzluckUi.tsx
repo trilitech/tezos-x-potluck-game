@@ -1,9 +1,10 @@
+import { useEffect, useId, useLayoutEffect, useRef, type AnimationEvent, type ReactNode } from "react";
+import { TEZOSX_EVM_TESTNET_NAME } from "./tezosxNetwork";
+
 export function shortAddr(addr: string | null): string {
   if (!addr || addr.length < 12) return "—";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
-
-import { useEffect, useId, useRef, type AnimationEvent, type ReactNode } from "react";
 
 /** Small gold “lucky pot” for the topbar / brand mark. */
 export function PotzLuckPotIcon() {
@@ -259,9 +260,18 @@ export function PotButton(props: {
 }
 
 export function EventLogStrip(props: { entries: EventLogEntry[]; evmTxUrl: (hash: string) => string }) {
-  const shown = props.entries.slice(-4);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const lastId = props.entries.length ? props.entries[props.entries.length - 1].id : 0;
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [props.entries.length, lastId]);
+
+  const shown = props.entries;
   return (
-    <div className="event-log-strip">
+    <div className="event-log-strip" ref={scrollRef}>
       {shown.length === 0 ? (
         <div className="el-empty">[EVENT LOG] waiting for activity…</div>
       ) : (
@@ -318,11 +328,11 @@ export function PotFooter(props: {
 export function NetworkHelpPotz(props: { onAdd: () => void }) {
   return (
     <div className="net-help">
-      You&apos;re not on the Tezos X network.{" "}
+      You&apos;re not on {TEZOSX_EVM_TESTNET_NAME}.{" "}
       <button type="button" className="link-btn inline" onClick={props.onAdd}>
-        Add the Tezos X network
+        Add it to your wallet
       </button>{" "}
-      to your wallet to play.
+      to play.
     </div>
   );
 }

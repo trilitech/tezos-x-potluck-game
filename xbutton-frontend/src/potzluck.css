@@ -590,11 +590,14 @@ body {
   line-height: 1.55;
 }
 
-/* Event log strip below pot */
+/* Event log strip below pot (scroll keeps earlier connect / airdrop lines visible) */
 .event-log-strip {
   display: flex; flex-direction: column; gap: 4px;
   font-family: var(--font-mono); font-size: 12px;
   min-height: 88px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 4px;
   width: min(640px, 100%);
 }
 .el-empty { color: var(--fg-4); text-align: center; }
