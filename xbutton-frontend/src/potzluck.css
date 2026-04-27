@@ -1143,5 +1143,54 @@ body {
   }
 }
 
+/* Wallet picker (EIP-6963) */
+.wallet-picker-card {
+  max-width: 400px;
+}
+.wallet-picker-body { padding-top: 0; }
+.wallet-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wallet-picker-item { margin: 0; }
+.wallet-picker-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.wallet-picker-btn:hover {
+  background: var(--bg-3);
+  border-color: var(--line-3);
+}
+.wallet-picker-icon {
+  border-radius: 8px;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+.wallet-picker-icon-fallback {
+  display: block;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--bg-4);
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.wallet-picker-name { font-weight: 600; }
+
 .rt-dot.evm { background: var(--blue); }
 .rt-dot.tez { background: var(--green); }

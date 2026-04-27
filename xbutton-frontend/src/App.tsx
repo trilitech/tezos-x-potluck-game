@@ -15,6 +15,20 @@ import {
   type EventLogTone,
 } from "./potzluckUi";
 import { TEZOSX_EVM_TESTNET_NAME } from "./tezosxNetwork";
+import { WalletPickerModal } from "./WalletPickerModal";
+import {
+  clearSavedWalletRdns,
+  discoverEip6963Wallets,
+  findDetailBySavedRdns,
+  getSavedWalletRdns,
+  saveWalletRdns,
+  type Eip6963ProviderDetail,
+} from "./wallet/discoverEip6963";
+import {
+  getEvmProvider,
+  setSelectedEvmProvider,
+  type SelectedEthereumProvider,
+} from "./wallet/selectedEvmProvider";
 
 const evmRpc = import.meta.env.VITE_EVM_RPC ?? "https://demo.txpark.nomadic-labs.com/rpc";
 const tezlinkRpc = import.meta.env.VITE_TEZLINK_RPC ?? "https://demo.txpark.nomadic-labs.com/rpc/tezlink";
@@ -418,15 +432,7 @@ type ActionState =
   | { kind: "success"; message: string; txHash?: string; tezosOpsUrl?: string; steps?: FlowStep[] }
   | { kind: "error"; message: string; txHash?: string; tezosOpsUrl?: string; steps?: undefined };
 
-type EthereumProvider = ethers.Eip1193Provider & {
-  on?: (event: string, listener: (...args: unknown[]) => void) => void;
-  removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
-};
-
-function getEthereum(): EthereumProvider | undefined {
-  if (typeof window === "undefined") return undefined;
-  return window.ethereum as EthereumProvider | undefined;
-}
+type EthereumProvider = SelectedEthereumProvider;
 
 const TEZOS_X_EVM_WALLET_HINT = `Your wallet does not look like it is on ${TEZOSX_EVM_TESTNET_NAME} yet. Add or switch to that network, then try again.`;
 
@@ -614,7 +620,7 @@ async function fetchGameState(): Promise<GameState> {
 async function fetchPayoutTxHash(
   winnerAddress: string | null,
 ): Promise<string | null> {
-  const ethereum = getEthereum();
+  const ethereum = getEvmProvider();
   if (!ethereum) return null;
   try {
     const provider = new ethers.BrowserProvider(ethereum);
@@ -840,6 +846,12 @@ function App() {
     xtz: false,
   });
   const [depositFxId, setDepositFxId] = useState(0);
+  /** `null` = discovery not run yet; length 0 = no provider */
+  const [eip6963Wallets, setEip6963Wallets] = useState<Eip6963ProviderDetail[] | null>(null);
+  const [walletPickerOpen, setWalletPickerOpen] = useState(false);
+  const [connectWalletOptions, setConnectWalletOptions] = useState<Eip6963ProviderDetail[]>([]);
+  /** Bumps so wallet listener effect re-binds to the selected EIP-1193 provider. */
+  const [evmListenerKey, setEvmListenerKey] = useState(0);
   const eventLogId = useRef(0);
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
   const pushEventLog = useCallback(
@@ -867,7 +879,8 @@ function App() {
     setDepositFxId(0);
   }, []);
 
-  const hasInjectedWallet = typeof window !== "undefined" && Boolean(getEthereum());
+  const hasInjectedWallet =
+    typeof window === "undefined" || eip6963Wallets === null || eip6963Wallets.length > 0;
   const onExpectedNetwork = walletState.chainId === CONFIG.chainId;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const sessionActive = gameState ? gameState.sessionEnd > nowSeconds : true;
@@ -1007,7 +1020,7 @@ function App() {
       return emptyState;
     }
 
-    const ethereum = getEthereum();
+    const ethereum = getEvmProvider();
     if (!ethereum) {
       const emptyState = {
         address: null,
@@ -1259,6 +1272,21 @@ function App() {
   ]);
 
   useEffect(() => {
+    void (async () => {
+      const d = await discoverEip6963Wallets();
+      setEip6963Wallets(d);
+      const saved = getSavedWalletRdns();
+      if (saved) {
+        const m = findDetailBySavedRdns(d, saved);
+        if (m) {
+          setSelectedEvmProvider(m.provider as SelectedEthereumProvider);
+          setEvmListenerKey((k) => k + 1);
+        }
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
     void refreshWalletState(false);
     void refreshGameState();
 
@@ -1266,7 +1294,7 @@ function App() {
       void refreshGameState();
     }, CONFIG.pollIntervalMs);
 
-    const ethereum = getEthereum();
+    const ethereum = getEvmProvider();
     if (!ethereum?.on) {
       return () => window.clearInterval(intervalId);
     }
@@ -1289,7 +1317,96 @@ function App() {
       ethereum.removeListener?.("accountsChanged", handleAccountsChanged);
       ethereum.removeListener?.("chainChanged", handleChainChanged);
     };
-  }, [refreshGameState, refreshWalletState]);
+  }, [refreshGameState, refreshWalletState, evmListenerKey]);
+
+  function applySelectedProvider(detail: Eip6963ProviderDetail) {
+    setSelectedEvmProvider(detail.provider as SelectedEthereumProvider);
+    saveWalletRdns(detail.info.rdns || detail.info.uuid);
+    setEvmListenerKey((k) => k + 1);
+  }
+
+  async function runConnectCore() {
+    const ethereum = getEvmProvider();
+    if (!ethereum) {
+      const msg =
+        "No browser wallet was found. Install a wallet extension (for example MetaMask), or open this page in your wallet’s in-app browser, then press Connect again.";
+      pushEventLog(msg, "error");
+      setActionState({ kind: "error", message: msg });
+      return;
+    }
+
+    let accounts: string[];
+    try {
+      const provider = new ethers.BrowserProvider(ethereum);
+      accounts = (await provider.send("eth_requestAccounts", [])) as string[];
+    } catch (error) {
+      if (isUserRejectedWalletError(error)) {
+        const msg =
+          "Your wallet did not approve access (you may have rejected the request or closed the prompt). Press Connect to try again.";
+        pushEventLog(msg, "info");
+        setActionState({
+          kind: "idle",
+          message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
+        });
+        return;
+      }
+      const msg =
+        error instanceof Error ? error.message : "Could not reach your wallet. Unlock it and try Connect again.";
+      pushEventLog(msg, "error");
+      setActionState({ kind: "error", message: msg });
+      return;
+    }
+
+    if (accounts.length === 0) {
+      const msg =
+        "Your wallet returned no account. Unlock it, allow this site, or pick an active account, then press Connect again.";
+      pushEventLog(msg, "error");
+      setActionState({ kind: "error", message: msg });
+      return;
+    }
+
+    const connectedWallet = await refreshWalletState(false);
+    if (!connectedWallet?.address) {
+      const msg =
+        "Could not read your wallet after it connected. Unlock your wallet, check that you are on a supported network, and try Connect again.";
+      pushEventLog(msg, "error");
+      setActionState({ kind: "error", message: msg });
+      return;
+    }
+
+    if (connectedWallet.chainId !== CONFIG.chainId) {
+      pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
+      setActionState({
+        kind: "error",
+        message: TEZOS_X_EVM_WALLET_HINT,
+      });
+      return;
+    }
+
+    const funded = await ensureTestnetFundsIfNeeded(connectedWallet);
+    const { willAirdrop } = funded;
+
+    const latestGameState = await refreshGameState();
+    if (!latestGameState) {
+      setActionState({
+        kind: "error",
+        message: "Could not load game state. Refresh and try again.",
+      });
+      return;
+    }
+
+    pushEventLog(
+      willAirdrop
+        ? "Testnet funds are in your wallet. Click Play when you are ready to open or join a round and deposit."
+        : "Wallet connected on Tezos X. Click Play when you are ready to deposit or start a new round.",
+      "info",
+    );
+
+    setActionState({
+      kind: "idle",
+      message: `Click Play to start or join a round and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
+    });
+  }
 
   async function connectWallet() {
     setWalletError(null);
@@ -1300,97 +1417,73 @@ function App() {
       kind: "pending",
       message: CONNECT_WALLET_CHECKING_MSG,
     });
-    let willAirdrop = false;
+
+    const discovered = await discoverEip6963Wallets();
+    setEip6963Wallets(discovered);
+
+    if (discovered.length === 0) {
+      const msg =
+        "No browser wallet was found. Install a wallet extension (for example MetaMask), or open this page in your wallet’s in-app browser, then press Connect again.";
+      pushEventLog(msg, "error");
+      setActionState({ kind: "error", message: msg });
+      setIsConnecting(false);
+      return;
+    }
+
+    if (discovered.length > 1) {
+      setConnectWalletOptions(discovered);
+      setWalletPickerOpen(true);
+      return;
+    }
+
+    applySelectedProvider(discovered[0]);
+
     try {
-      const ethereum = getEthereum();
-      if (!ethereum) {
-        const msg =
-          "No browser wallet was found. Install a wallet extension (for example MetaMask), or open this page in your wallet’s in-app browser, then press Connect again.";
-        pushEventLog(msg, "error");
-        setActionState({ kind: "error", message: msg });
-        return;
-      }
-
-      let accounts: string[];
-      try {
-        const provider = new ethers.BrowserProvider(ethereum);
-        accounts = (await provider.send("eth_requestAccounts", [])) as string[];
-      } catch (error) {
-        if (isUserRejectedWalletError(error)) {
-          const msg =
-            "Your wallet did not approve access (you may have rejected the request or closed the prompt). Press Connect to try again.";
-          pushEventLog(msg, "info");
-          setActionState({
-            kind: "idle",
-            message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
-          });
-          return;
-        }
-        const msg =
-          error instanceof Error ? error.message : "Could not reach your wallet. Unlock it and try Connect again.";
-        pushEventLog(msg, "error");
-        setActionState({ kind: "error", message: msg });
-        return;
-      }
-
-      if (accounts.length === 0) {
-        const msg =
-          "Your wallet returned no account. Unlock it, allow this site, or pick an active account, then press Connect again.";
-        pushEventLog(msg, "error");
-        setActionState({ kind: "error", message: msg });
-        return;
-      }
-
-      const connectedWallet = await refreshWalletState(false);
-      if (!connectedWallet?.address) {
-        const msg =
-          "Could not read your wallet after it connected. Unlock your wallet, check that you are on a supported network, and try Connect again.";
-        pushEventLog(msg, "error");
-        setActionState({ kind: "error", message: msg });
-        return;
-      }
-
-      if (connectedWallet.chainId !== CONFIG.chainId) {
-        pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
-        setActionState({
-          kind: "error",
-          message: TEZOS_X_EVM_WALLET_HINT,
-        });
-        return;
-      }
-
-      const funded = await ensureTestnetFundsIfNeeded(connectedWallet);
-      willAirdrop = funded.willAirdrop;
-
-      const latestGameState = await refreshGameState();
-      if (!latestGameState) {
-        setActionState({
-          kind: "error",
-          message: "Could not load game state. Refresh and try again.",
-        });
-        return;
-      }
-
-      pushEventLog(
-        willAirdrop
-          ? "Testnet funds are in your wallet. Click Play when you are ready to open or join a round and deposit."
-          : "Wallet connected on Tezos X. Click Play when you are ready to deposit or start a new round.",
-        "info",
-      );
-
-      setActionState({
-        kind: "idle",
-        message: `Click Play to start or join a round and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
-      });
+      await runConnectCore();
     } catch (error) {
       if (error instanceof Error && (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))) {
         setActionState({ kind: "error", message: formatAirdropError(error) });
       } else {
-        throw error;
+        console.error("[connect]", error);
+        setActionState({
+          kind: "error",
+          message: error instanceof Error ? error.message : "Something went wrong while connecting.",
+        });
       }
     } finally {
       setIsConnecting(false);
     }
+  }
+
+  function handleWalletPickerSelect(detail: Eip6963ProviderDetail) {
+    setWalletPickerOpen(false);
+    applySelectedProvider(detail);
+    void (async () => {
+      try {
+        await runConnectCore();
+      } catch (error) {
+        if (error instanceof Error && (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))) {
+          setActionState({ kind: "error", message: formatAirdropError(error) });
+        } else {
+          console.error("[connect]", error);
+          setActionState({
+            kind: "error",
+            message: error instanceof Error ? error.message : "Something went wrong while connecting.",
+          });
+        }
+      } finally {
+        setIsConnecting(false);
+      }
+    })();
+  }
+
+  function handleWalletPickerClose() {
+    setWalletPickerOpen(false);
+    setIsConnecting(false);
+    setActionState({
+      kind: "idle",
+      message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
+    });
   }
 
   async function runAfterNetworkSwitchToTezosX() {
@@ -1425,7 +1518,7 @@ function App() {
   }
 
   async function disconnectWallet() {
-    const ethereum = getEthereum();
+    const ethereum = getEvmProvider();
     if (ethereum?.request) {
       try {
         await ethereum.request({
@@ -1437,6 +1530,9 @@ function App() {
       }
     }
     isWalletDisconnectedRef.current = true;
+    setSelectedEvmProvider(null);
+    clearSavedWalletRdns();
+    setEvmListenerKey((k) => k + 1);
     setWalletError(null);
     setWalletState({
       address: null,
@@ -1453,7 +1549,7 @@ function App() {
   }
 
   async function switchNetwork() {
-    const ethereum = getEthereum();
+    const ethereum = getEvmProvider();
     if (!ethereum) return;
 
     try {
@@ -1543,7 +1639,7 @@ function App() {
   }
 
   async function pressButton() {
-    const ethereum = getEthereum();
+    const ethereum = getEvmProvider();
     if (!ethereum) {
       setActionState({ kind: "error", message: "No browser wallet is available in this browser." });
       return;
@@ -1645,7 +1741,7 @@ function App() {
   }
 
   async function claimContract() {
-    const ethereum = getEthereum();
+    const ethereum = getEvmProvider();
     if (!ethereum) {
       setActionState({ kind: "error", message: "No browser wallet is available in this browser." });
       return;
@@ -1786,7 +1882,7 @@ function App() {
   }
 
   async function startNewSession(options?: { continueWithDeposit?: boolean }) {
-    const ethereum = getEthereum();
+    const ethereum = getEvmProvider();
     if (!ethereum) {
       setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_TESTNET_NAME}.` });
       return false;
@@ -2058,6 +2154,12 @@ function App() {
           receivedXtz={airdropModalState.xtz}
           onDismiss={dismissAirdropModal}
         />
+        <WalletPickerModal
+          open={walletPickerOpen}
+          options={connectWalletOptions}
+          onSelect={handleWalletPickerSelect}
+          onClose={handleWalletPickerClose}
+        />
       </>
     );
   }
@@ -2223,6 +2325,12 @@ function App() {
         receivedUsdc={airdropModalState.usdc}
         receivedXtz={airdropModalState.xtz}
         onDismiss={dismissAirdropModal}
+      />
+      <WalletPickerModal
+        open={walletPickerOpen}
+        options={connectWalletOptions}
+        onSelect={handleWalletPickerSelect}
+        onClose={handleWalletPickerClose}
       />
       <PotzTour
         open={tourOpen}
