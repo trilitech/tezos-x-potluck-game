@@ -1302,16 +1302,51 @@ function App() {
     });
     let willAirdrop = false;
     try {
-      const connectedWallet = await refreshWalletState(true);
+      const ethereum = getEthereum();
+      if (!ethereum) {
+        const msg =
+          "No browser wallet was found. Install a wallet extension (for example MetaMask), or open this page in your wallet’s in-app browser, then press Connect again.";
+        pushEventLog(msg, "error");
+        setActionState({ kind: "error", message: msg });
+        return;
+      }
+
+      let accounts: string[];
+      try {
+        const provider = new ethers.BrowserProvider(ethereum);
+        accounts = (await provider.send("eth_requestAccounts", [])) as string[];
+      } catch (error) {
+        if (isUserRejectedWalletError(error)) {
+          const msg =
+            "Your wallet did not approve access (you may have rejected the request or closed the prompt). Press Connect to try again.";
+          pushEventLog(msg, "info");
+          setActionState({
+            kind: "idle",
+            message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
+          });
+          return;
+        }
+        const msg =
+          error instanceof Error ? error.message : "Could not reach your wallet. Unlock it and try Connect again.";
+        pushEventLog(msg, "error");
+        setActionState({ kind: "error", message: msg });
+        return;
+      }
+
+      if (accounts.length === 0) {
+        const msg =
+          "Your wallet returned no account. Unlock it, allow this site, or pick an active account, then press Connect again.";
+        pushEventLog(msg, "error");
+        setActionState({ kind: "error", message: msg });
+        return;
+      }
+
+      const connectedWallet = await refreshWalletState(false);
       if (!connectedWallet?.address) {
-        pushEventLog(
-          "No wallet account was connected (you may have closed the wallet prompt). Press Connect on the pot when you are ready to try again.",
-          "info",
-        );
-        setActionState({
-          kind: "idle",
-          message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
-        });
+        const msg =
+          "Could not read your wallet after it connected. Unlock your wallet, check that you are on a supported network, and try Connect again.";
+        pushEventLog(msg, "error");
+        setActionState({ kind: "error", message: msg });
         return;
       }
 
