@@ -1187,12 +1187,17 @@ function App() {
   const lastPayoutEventFingerprint = useRef("");
 
   // When payout completes (after claim + relayer), update status, event log, and payout tx when found.
+  // Skip while `claimContract` is still sequencing UI (claim confirmed → relayer line); otherwise the
+  // async `pushEventLog` here can beat the actionState→event-log mirror and reorder messages.
   useEffect(() => {
     if (!gameState?.claimed) {
       lastPayoutEventFingerprint.current = "";
       return;
     }
     if (!gameState?.payoutCompleted) {
+      return;
+    }
+    if (isClaiming) {
       return;
     }
 
@@ -1249,6 +1254,7 @@ function App() {
     gameState?.potRaw,
     gameState?.sessionEnd,
     walletState.address,
+    isClaiming,
     pushEventLog,
   ]);
 
@@ -1712,7 +1718,7 @@ function App() {
 
       setActionState({
         kind: "pending",
-        message: "A small relayer is calling the NAC gateway to pay out the winner…",
+        message: "We are calling the NAC gateway to pay out the winner…",
         txHash: tx.hash,
         steps: completeFlowSteps(CLAIM_STEP_DEFS),
       });
