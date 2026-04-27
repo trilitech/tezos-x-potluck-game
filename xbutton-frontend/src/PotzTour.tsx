@@ -39,7 +39,7 @@ function StepWhat() {
   return (
     <>
       <TourIntro
-        title="One app. Two interfaces. No context switch."
+        title="One app. Two interfaces."
         body={
           <>
             Tezos X lets your dApps run on <b>Etherlink</b> (EVM Interface) and <b>Tezlink</b> (Michelson Interface)
