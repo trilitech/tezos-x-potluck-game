@@ -86,20 +86,8 @@ export function discoverEip6963Wallets(): Promise<Eip6963ProviderDetail[]> {
       const from6963 = dedupeByProvider([...byRdns.values()]);
 
       const w = (window as unknown as { ethereum?: Eip1193Provider }).ethereum;
-      const hasSameAsWindow = w ? from6963.some((x) => x.provider === w) : true;
 
       const out: Eip6963ProviderDetail[] = [...from6963];
-      if (w && !hasSameAsWindow) {
-        out.push({
-          info: {
-            uuid: "eip-1193-legacy",
-            name: "Default browser extension (window.ethereum)",
-            icon: "",
-            rdns: UUID_FALLBACK,
-          },
-          provider: w,
-        });
-      }
       if (out.length === 0 && w) {
         out.push({
           info: {
