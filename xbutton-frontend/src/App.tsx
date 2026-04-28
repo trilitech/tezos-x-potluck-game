@@ -156,6 +156,7 @@ const ESCROW_ABI = [
   "function deposit(uint256 amount)",
   "event Deposited(address indexed player, uint256 amount)",
   "event PaidOut(address indexed winner, uint256 amount)",
+  "event SessionCompleted(uint256 indexed sessionId, address indexed winner, uint256 potSize, uint256 paidOutAt)",
 ];
 
 const GATEWAY_ABI = [
@@ -224,6 +225,14 @@ type WalletState = {
   usdcAllowance: bigint | null;
   usdcBalanceRaw: bigint | null;
   xtzBalanceRaw: bigint | null;
+};
+
+type SessionHistoryEntry = {
+  sessionId: string;
+  winner: string;
+  potDisplay: string;
+  txHash: string | null;
+  paidOutAt: number;
 };
 
 /** When not eligible for airdrop (or airdrop skipped), warn if play is still impossible: stake in USDC + XTZ for gas. */
@@ -661,6 +670,36 @@ async function fetchPayoutTxHash(
   return null;
 }
 
+async function fetchRecentCompletedSessions(limit = 10): Promise<SessionHistoryEntry[]> {
+  const provider = new ethers.JsonRpcProvider(CONFIG.evmRpc);
+  const escrow = new ethers.Contract(CONFIG.potAddress, ESCROW_ABI, provider);
+  const latestBlock = await provider.getBlockNumber();
+  const fromBlock = Math.max(0, latestBlock - 5000);
+  const logs = await escrow.queryFilter(escrow.filters.SessionCompleted(), fromBlock, "latest");
+
+  return logs
+    .slice(-limit)
+    .reverse()
+    .flatMap((log) => {
+      const parsed = escrow.interface.parseLog(log);
+      if (!parsed) {
+        return [];
+      }
+      const sessionId = parsed.args[0] as bigint;
+      const winner = parsed.args[1] as string;
+      const potSize = parsed.args[2] as bigint;
+      const paidOutAt = parsed.args[3] as bigint;
+
+      return [{
+        sessionId: sessionId.toString(),
+        winner: ethers.getAddress(winner),
+        potDisplay: formatTokenAmount(potSize, CONFIG.usdcDecimals),
+        txHash: log.transactionHash ?? null,
+        paidOutAt: Number(paidOutAt),
+      }];
+    });
+}
+
 async function sleep(ms: number) {
   await new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -913,6 +952,7 @@ function App() {
   /** Bumps so wallet listener effect re-binds to the selected EIP-1193 provider. */
   const [evmListenerKey, setEvmListenerKey] = useState(0);
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
+  const [recentSessions, setRecentSessions] = useState<SessionHistoryEntry[]>([]);
   const pushEventLog = useCallback(
     (msg: string, tone: EventLogTone = "info", evmTxHash?: string, tezosOpsUrl?: string) => {
       setEventLog((prev) => [
@@ -1332,6 +1372,27 @@ function App() {
     isClaiming,
     pushEventLog,
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const sessions = await fetchRecentCompletedSessions(10);
+        if (!cancelled) {
+          setRecentSessions(sessions);
+        }
+      } catch {
+        if (!cancelled) {
+          setRecentSessions([]);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gameState?.payoutCompleted, gameState?.potRaw]);
 
   useEffect(() => {
     void (async () => {
@@ -2009,7 +2070,7 @@ function App() {
     setIsStartingSession(true);
     setActionState({
       kind: "pending",
-      message: `Starting a new round on ${TEZOSX_EVM_TESTNET_NAME}…`,
+      message: "Starting a new round on Tezlink…",
       steps: markFlowSteps(START_SESSION_STEP_DEFS, "wallet_start"),
     });
     try {
@@ -2041,7 +2102,7 @@ function App() {
         leaveStartingSessionFlag = true;
         setActionState({
           kind: "pending",
-          message: "Round created. Syncing game state on Tezlink…",
+          message: "Round created on Tezlink. Syncing game state…",
           txHash: tx.hash,
           steps: completeFlowSteps(START_SESSION_STEP_DEFS),
         });
@@ -2138,7 +2199,7 @@ function App() {
         }
         setActionState({
           kind: "pending",
-          message: `Round ready. Confirm your ${CONFIG.pressAmount} USDC deposit.`,
+          message: `Round ready. Confirm your ${CONFIG.pressAmount} USDC deposit into the EVM escrow.`,
         });
         await pressButton();
       } finally {
@@ -2165,7 +2226,7 @@ function App() {
         }
         setActionState({
           kind: "pending",
-          message: `Round ready. Confirm your ${CONFIG.pressAmount} USDC deposit.`,
+          message: `Round ready. Confirm your ${CONFIG.pressAmount} USDC deposit into the EVM escrow.`,
         });
         await pressButton();
       } finally {
@@ -2398,6 +2459,31 @@ function App() {
               <div className={`session-state ${sessionActive ? "active" : ""}`}>
                 <span className="dot" />
                 {sessionActive ? "Session active" : "No active session"}
+              </div>
+              <div className="session-history">
+                <div className="session-history-h">Last 10 sessions</div>
+                {recentSessions.length > 0 ? (
+                  <div className="session-history-list">
+                    {recentSessions.map((session) => (
+                      <div key={`${session.sessionId}-${session.txHash ?? "nohash"}`} className="session-history-item">
+                        <div className="session-history-top">
+                          <span>Session #{session.sessionId}</span>
+                          <span>{session.potDisplay} USDC</span>
+                        </div>
+                        <div className="session-history-bottom">
+                          <span>Winner: {shortAddr(session.winner)}</span>
+                          {session.txHash ? (
+                            <a href={evmTxUrl(session.txHash)} target="_blank" rel="noreferrer">
+                              View payout
+                            </a>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="session-history-empty">No completed sessions yet.</div>
+                )}
               </div>
             </aside>
 
