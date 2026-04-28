@@ -774,6 +774,14 @@ body {
   margin: 0 0 18px;
   text-wrap: pretty; max-width: 56ch;
 }
+.tour-summary-label {
+  margin: 0 0 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-3);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
 .tour-points {
   display: flex;
   flex-direction: column;

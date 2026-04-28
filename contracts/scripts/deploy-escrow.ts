@@ -15,7 +15,7 @@ dotenv.config();
 async function main() {
   const usdcAddress = process.env.USDC_ADDRESS?.trim();
   if (!usdcAddress) {
-    throw new Error("Set USDC_ADDRESS in contracts/.env (e.g. 0xDCD349f9c09085BA51ab0D317238664AA5d8A134)");
+    throw new Error("Set USDC_ADDRESS in contracts/.env (e.g. 0x257De96BE880EF01894304701C4aF4ef08FCbF9a)");
   }
 
   const [deployer] = await ethers.getSigners();

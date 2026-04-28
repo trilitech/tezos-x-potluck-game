@@ -51,7 +51,8 @@ export function PotzLuckPotIcon() {
 
 export type EventLogTone = "info" | "success" | "error";
 export type EventLogEntry = {
-  id: number;
+  /** Stable unique key (UUID) so list keys never collide after HMR or rare state races. */
+  id: string;
   msg: string;
   tone: EventLogTone;
   /** EVM (Blockscout) transaction hash — links phrases like “deposit transaction”. */
@@ -59,6 +60,13 @@ export type EventLogEntry = {
   /** Tezlink / tzkt page for Michelson-side activity (operations list or a specific op hash). */
   tezosOpsUrl?: string;
 };
+
+export function createEventLogEntryId(): string {
+  if (typeof globalThis !== "undefined" && globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `ev-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
 
 /** Longer phrases first so we do not link the wrong substring (e.g. "claim" inside "claimed"). */
 const TX_LINK_PHRASES = [
@@ -261,7 +269,7 @@ export function PotButton(props: {
 
 export function EventLogStrip(props: { entries: EventLogEntry[]; evmTxUrl: (hash: string) => string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const lastId = props.entries.length ? props.entries[props.entries.length - 1].id : 0;
+  const lastId = props.entries.length ? props.entries[props.entries.length - 1].id : "";
 
   useLayoutEffect(() => {
     const el = scrollRef.current;

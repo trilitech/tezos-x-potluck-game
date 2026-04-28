@@ -98,18 +98,19 @@ function StepWhy() {
           </>
         }
       />
+      <div className="tour-summary-label">TL:DR</div>
       <div className="tour-points">
         <div className="tour-point">
           <span className="tour-point-k">Reach</span>
-          <span className="tour-point-v">liquidity and new user pools on EVM and Michelson</span>
+          <span className="tour-point-v">Liquidity and new user pools on EVM and Michelson</span>
         </div>
         <div className="tour-point">
           <span className="tour-point-k">Keep</span>
-          <span className="tour-point-v">the same dApp instead of rewriting for different networks</span>
+          <span className="tour-point-v">The same dApp instead of rewriting for different networks</span>
         </div>
         <div className="tour-point">
           <span className="tour-point-k">Benefit</span>
-          <span className="tour-point-v">from ultra-low latency while still secured by Tezos L1</span>
+          <span className="tour-point-v">Ultra-low latency while still secured by Tezos L1</span>
         </div>
       </div>
     </>
@@ -129,6 +130,7 @@ function StepHow() {
           </>
         }
       />
+      <div className="tour-summary-label">TL:DR</div>
       <div className="tour-points">
         <div className="tour-point">
           <span className="tour-point-k">Step 1</span>
@@ -161,25 +163,26 @@ function StepPlaying() {
           </>
         }
       />
+      <div className="tour-summary-label">TL:DR</div>
       <div className="tour-points">
         <div className="tour-point">
           <span className="tour-point-k">Networks</span>
           <span className="tour-point-v">
-            Add the <span className="tour-name">Tezos X</span> test network to your EVM wallet (Etherlink) and, if you
-            use a native Tezos wallet on Tezlink, add Tezos X there too—both need the chain to connect and play.
+            Add the <span className="tour-name">Tezos X</span> test network to your EVM wallet and Tezos wallet to
+            connect and play.
           </span>
         </div>
         <div className="tour-point">
           <span className="tour-point-k">Play</span>
-          <span className="tour-point-v">deposit funds into the game&apos;s pot</span>
+          <span className="tour-point-v">Deposit funds into the game&apos;s pot</span>
         </div>
         <div className="tour-point">
           <span className="tour-point-k">Winner</span>
-          <span className="tour-point-v">the last player to deposit before the session ends</span>
+          <span className="tour-point-v">The last player to deposit before the session ends</span>
         </div>
         <div className="tour-point">
           <span className="tour-point-k">Claim</span>
-          <span className="tour-point-v">all the tokens in the pot, including your own deposit</span>
+          <span className="tour-point-v">All the tokens in the pot, including your own deposit</span>
         </div>
       </div>
     </>
@@ -200,10 +203,11 @@ function StepBehind() {
           </>
         }
       />
+      <div className="tour-summary-label">TL:DR</div>
       <div className="tour-points">
         <div className="tour-point">
           <span className="tour-point-k">No session?</span>
-          <span className="tour-point-v">a new 5min game starts first</span>
+          <span className="tour-point-v">A new 5min game starts first</span>
         </div>
         <div className="tour-point">
           <span className="tour-point-k">Deposit</span>
@@ -211,7 +215,7 @@ function StepBehind() {
         </div>
         <div className="tour-point">
           <span className="tour-point-k">Sync</span>
-          <span className="tour-point-v">the relayer calls the NAC gateway, which updates game state in Michelson</span>
+          <span className="tour-point-v">The relayer calls the NAC gateway, which updates game state in Michelson</span>
         </div>
       </div>
     </>

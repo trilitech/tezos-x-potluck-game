@@ -2,16 +2,16 @@
 
 Tezos X introduces a simple but powerful idea: developers can build applications that use both an EVM interface and a Michelson interface in the same system.
 
-If you already know Solidity, MetaMask, ethers, and how to deploy to EVM testnets, Tezos X lets you keep that workflow while also reaching Michelson contracts and Michelson-side storage.
+If you already know Solidity, MetaMask, Rabby, ethers, and how to deploy to EVM testnets, Tezos X lets you keep that workflow while also reaching Michelson contracts and Michelson-side storage.
 
 This is made possible through Native Atomic Composability.
 
 In this tutorial, we’ll use a very simple example to understand how that works. We’ll build a counter where:
 
 - a user signs a transaction on the EVM interface
-- a Solidity contract forwards the action through the Tezos X gateway
+- a Solidity contract forwards the action through a Tezos X gateway precompile, which is the EVM-side entrypoint for Native Atomic Composability
 - the **counter itself lives on the Michelson interface** (one place to read the truth)
-- **`increment()`** and **`decrement()`** are both ordinary EVM-wallet calls, but each one forwards through the gateway to the **same** Michelson counter—so there is a single number to read on the Michelson side, not two independent tallies on two runtimes
+- `**increment()`** and `**decrement()**` are both ordinary EVM-wallet calls, but each one forwards through the gateway to the **same** Michelson counter—so there is a single number to read on the Michelson side, not two independent tallies on two runtimes
 
 By the end, you will have followed concrete steps: originate Michelson, deploy Solidity, call functions, read explorers, read logs, and see what happens when something fails (which is where atomicity shows up).
 
@@ -21,16 +21,18 @@ By the end, you will have followed concrete steps: originate Michelson, deploy S
 
 **Canonical docs (RPCs, chain IDs, explorers, faucet):** [Link TBD — Tezos X network & tooling documentation]().
 
-The hosted stack you use (for example a public testnet, previewnet, or a future dashboard) will publish the values you must paste into MetaMask, Temple, and your scripts. **Do not hard-code URLs from this file** until you have replaced them from the doc above or from your dashboard.
+The hosted stack you use (for example a public testnet, previewnet, or a future dashboard) will publish the values you must paste into MetaMask, Rabby, Temple, and your scripts. **Do not hard-code URLs from this file** until you have replaced them from the doc above or from your dashboard.
 
-| What you need | Where to get it | Notes |
-|----------------|-----------------|--------|
-| EVM RPC URL | Official doc / dashboard | Tentative until you paste the current value |
-| EVM chain ID | Official doc / dashboard | Same |
-| Michelson / Tezlink RPC URL | Official doc / dashboard | Used for Temple and for `curl` storage checks |
-| EVM block explorer | Official doc / dashboard | Often a Blockscout-style host; the dashboard will name it |
-| Michelson explorer | Official doc / dashboard | Used to inspect `KT1` storage |
-| Faucet | Official doc / dashboard | For both sides if applicable |
+
+| What you need               | Where to get it          | Notes                                                     |
+| --------------------------- | ------------------------ | --------------------------------------------------------- |
+| EVM RPC URL                 | Official doc / dashboard | Tentative until you paste the current value               |
+| EVM chain ID                | Official doc / dashboard | Same                                                      |
+| Michelson / Tezlink RPC URL | Official doc / dashboard | Used for Temple and for `curl` storage checks             |
+| EVM block explorer          | Official doc / dashboard | Often a Blockscout-style host; the dashboard will name it |
+| Michelson explorer          | Official doc / dashboard | Used to inspect `KT1` storage                             |
+| Faucet                      | Official doc / dashboard | For both sides if applicable                              |
+
 
 This tutorial’s screenshots and wording assume you already have those strings in a scratch pad before you start.
 
@@ -42,13 +44,13 @@ Tezos X is designed as an integrated system with multiple execution interfaces, 
 
 For developers, the practical takeaway is:
 
-- the EVM interface is where Solidity contracts and MetaMask-style interactions live
+- the EVM interface is where Solidity contracts and EIP-1193 wallet interactions live
 - the Michelson interface is where Michelson contracts and Michelson storage live
 - Native Atomic Composability is what allows those two interfaces to work together
 
-That means a contract call that starts from the EVM side can trigger logic on the Michelson side **in the same EVM transaction**, in the same spirit as calling another contract on the same chain: you are not asked here to bolt on a separate bridge project, wire relayers, or split trust across two asynchronous steps. (If you later use patterns that *do* split EVM observation from Michelson updates, that is a different architecture; this tutorial stays on the single-transaction path.)
+That means a contract call that starts from the EVM side can trigger logic on the Michelson side, and a contract call that starts from the Michelson side can trigger logic on the EVM side, **in the same EVM transaction**, in the same spirit as calling another contract on the same chain: you are not asked here to bolt on a separate bridge project, wire relayers, or split trust across two asynchronous steps. (If you later use patterns that *do* split EVM observation from Michelson updates, that is a different architecture; this tutorial stays on the single-transaction path.)
 
-On the EVM side, the system exposes a **fixed gateway address** (a precompile). Your Solidity code treats it like any other contract: you hold an `INativeAtomicGateway` at that address and call `callMichelson(...)`.
+On the EVM side, the system exposes a **fixed gateway address** (a precompile). This gateway is the contract-like system entrypoint your Solidity code uses to invoke Native Atomic Composability. Your Solidity code treats it like any other contract: you hold an `INativeAtomicGateway` at that address and call `callMichelson(...)`.
 
 ---
 
@@ -93,12 +95,13 @@ You do not need access to any private repository to follow this tutorial.
 
 You do need:
 
-- MetaMask or another EIP-1193 wallet for the EVM interface
+- MetaMask, Rabby, or another EIP-1193 wallet for the EVM interface
 - Temple Wallet for the Michelson interface
 - test funds from the faucet linked in the official doc / dashboard
 - a Solidity workflow such as Remix, Hardhat, or Foundry
-- **`ligo`** installed (the [Ligo](https://ligolang.org/) compiler on your `PATH`) so you can compile CameLIGO to Michelson
-- **`octez-client`** installed (the Octez client binary on your `PATH`) and a **funded account** registered as an `octez-client` alias, which you will pass to `transferring … from <alias>` below
+- `**ligo`** installed (the [Ligo](https://ligolang.org/) compiler on your `PATH`) so you can write the contract in CameLIGO and compile it to Michelson
+- **Octez** installed (`octez-client` on your `PATH`) so you can originate the Michelson contract and run the Octez commands shown below
+- a **funded account** registered locally as an `octez-client` alias, which is just the local name Octez uses for a key you imported on your machine and which you will pass to `transferring … from <alias>` below. If you have not set that up yet, follow the relevant Octez client account / key setup docs before continuing
 
 ---
 
@@ -122,7 +125,7 @@ interface INativeAtomicGateway {
 
 The parameters mean:
 
-- **destination:** the Michelson contract address, usually a `KT1`…
+- **destination:** the Michelson contract address, usually a `KT1`… A `KT1` address is the standard Tezos smart contract address format on the Michelson side
 - **entrypoint:** the Michelson entrypoint name, for example `"increment"` or `"decrement"`
 - **data:** the Michelson parameter encoded as bytes
 
@@ -138,13 +141,13 @@ We will use that value for both `increment` and `decrement` in this example.
 
 ### A.1 Why Michelson comes first
 
-You need the `KT1` address before you deploy the Solidity contract’s constructor. Doing Michelson first also matches how you’ll verify storage: you establish the baseline, then you change it from the EVM side.
+You need the `KT1` address before you deploy the Solidity contract’s constructor. A `KT1` address is a Tezos smart contract address on the Michelson side. Doing Michelson first also matches how you’ll verify storage: you establish the baseline, then you change it from the EVM side.
 
 ### A.2 Write the contract in CameLIGO, then compile to Michelson
 
-We keep the example small, but we add **`decrement`** so the EVM side is not only repeating “add one” while Michelson already did the same story. **`reset`** is still there so you can run the demo many times.
+We keep the example small, but we add `**decrement`** so the EVM side is not only repeating “add one” while Michelson already did the same story. `**reset**` is still there so you can run the demo many times.
 
-Write the contract in CameLIGO in a folder of your choice, then run the compile command below. The `octez-client` command in section A.4 expects that exact Michelson file name (`running counter-nac-tutorial.tz`). Storage is an **`int`**, so you still read a single “counter” value in the explorer.
+Write the contract in CameLIGO in a folder of your choice, then run the compile command below. The `octez-client` command in section A.4 expects that exact Michelson file name (`running counter-nac-tutorial.tz`). Storage is an `**int**`, so you still read a single “counter” value in the explorer.
 
 **Source — save as `counter-nac-tutorial.mligo`:**
 
@@ -174,7 +177,7 @@ In a terminal, `cd` into that folder, then run:
 ligo compile contract counter-nac-tutorial.mligo -m CounterNacTutorial > counter-nac-tutorial.tz
 ```
 
-You should now have **`counter-nac-tutorial.tz`** next to the `.mligo` file. If the command prints errors, fix the source and run it again until it succeeds with no output on stderr (the contract is written only to the `.tz` file).
+You should now have `**counter-nac-tutorial.tz**` next to the `.mligo` file. If the command prints errors, fix the source and run it again until it succeeds with no output on stderr (the contract is written only to the `.tz` file).
 
 #### Step 2: (Optional) Compile initial storage for `--init`
 
@@ -184,13 +187,13 @@ Ligo can also print the Micheline form of the initial storage (handy if your too
 ligo compile storage counter-nac-tutorial.mligo '0' -m CounterNacTutorial
 ```
 
-For this tutorial’s `octez-client` line, **`--init '0'`** is enough because storage is a plain `int` starting at zero.
+For this tutorial’s `octez-client` line, `**--init '0'**` is enough because storage is a plain `int` starting at zero.
 
 **What does this contract do?**
 
-- calling **`increment`** with `Unit`: increases storage by 1.
-- calling **`decrement`** with `Unit`: decreases storage by 1, unless it is already 0, in which case it fails with `"at zero"`.
-- calling **`reset`** with `Unit`: sets storage back to 0.
+- calling `**increment`** with `Unit`: increases storage by 1.
+- calling `**decrement**` with `Unit`: decreases storage by 1, unless it is already 0, in which case it fails with `"at zero"`.
+- calling `**reset**` with `Unit`: sets storage back to 0.
 
 Those names are the Michelson entrypoints your Solidity contract will call through the gateway (`"increment"`, `"decrement"`, and `"reset"`).
 
@@ -203,26 +206,23 @@ Those names are the Michelson entrypoints your Solidity contract will call throu
 
 ### A.4 Originating the contract with `octez-client`
 
-You will run a single **`octez-client originate contract`** invocation: point `--endpoint` at the **Michelson / Tezlink** RPC from the official doc, pass **`running counter-nac-tutorial.tz`** from your current directory, and set initial storage with **`--init`**.
+You will run a single `**octez-client originate contract`** invocation: point `--endpoint` at the **Michelson / Tezlink** RPC from the official doc, pass `**running counter-nac-tutorial.tz`** from your current directory, and set initial storage with `**--init**`.
 
-1. **Install** the Octez shell if you do not have it yet (`octez-client` on your `PATH`).
-
-2. **Configure the signer.** Import or use a funded account the way you normally do for Tezos. The command below uses **`bootstrap1`** as the account alias in `transferring 0 from bootstrap1`; that name appears on some public Tezlink demos, but **your network might use another alias**. Replace **`bootstrap1`** with whatever alias `octez-client` knows for your funded key (for example after `octez-client import secret key myalias …`, use **`myalias`**).
-
-3. In a terminal, **`cd` into the folder** where you compiled **`counter-nac-tutorial.tz`** in section A.2. The next command assumes that exact file name in the **current working directory**:
+1. **Configure the signer.** Import or use a funded account the way you normally do for Tezos. The command below uses `**bootstrap1`** as the account alias in `transferring 0 from bootstrap1`; that name appears on some public Tezlink demos, but **your network might use another alias**. Replace `**bootstrap1`** with whatever alias `octez-client` knows for your funded key (for example after `octez-client import secret key myalias …`, use `**myalias**`).
+2. In a terminal, `**cd` into the folder** where you compiled `**counter-nac-tutorial.tz`** in section A.2. The next command assumes that exact file name in the **current working directory**:
 
 ```bash
 cd /path/to/the/folder/where/your/counter-nac-tutorial.tz/lives
 ```
 
-4. Set the Michelson RPC to the value from the official doc / dashboard (must be the **Tezlink** / Michelson interface URL, not the EVM JSON-RPC):
+1. Set the Michelson RPC to the value from the official doc / dashboard (must be the **Tezlink** / Michelson interface URL, not the EVM JSON-RPC):
 
 ```bash
 export MICHELSON_RPC="https://demo.txpark.nomadic-labs.com/rpc/tezlink"
 # ↑ example only — replace with the current URL from the official doc / dashboard
 ```
 
-5. **Originate** the contract (pick any unused local alias instead of `counter_nac_tutorial` if you prefer):
+1. **Originate** the contract (pick any unused local alias instead of `counter_nac_tutorial` if you prefer):
 
 ```bash
 octez-client --endpoint "$MICHELSON_RPC" \
@@ -234,15 +234,15 @@ octez-client --endpoint "$MICHELSON_RPC" \
   --fee 0.05
 ```
 
-- **`--init '0'`** is the initial storage for `storage int` (the counter starts at zero).
-- If the contract alias **`counter_nac_tutorial`** already exists locally from a previous attempt, add **`--force`** to the same command so `octez-client` can overwrite the alias.
-- Adjust **`--burn-cap`** / **`--fee`** if `octez-client` asks for higher caps.
+- `**--init '0'**` is the initial storage for `storage int` (the counter starts at zero).
+- If the contract alias `**counter_nac_tutorial**` already exists locally from a previous attempt, add `**--force**` to the same command so `octez-client` can overwrite the alias.
+- Adjust `**--burn-cap**` / `**--fee**` if `octez-client` asks for higher caps.
 
-6. When the command finishes, **`octez-client` prints the new `KT1` address** in the success output. Copy that **`KT1…`** to your scratch pad — you will paste it into the Solidity constructor.
+1. When the command finishes, `**octez-client` prints the new `KT1` address** in the success output. Copy that `**KT1…`** to your scratch pad — you will paste it into the Solidity constructor.
 
 At the end you must have:
 
-- the **`KT1` contract address** (from the originate output)
+- the `**KT1` contract address** (from the originate output)
 - confirmation that **initial storage is `0`** (you will double-check in the next step via explorer or `curl`)
 
 ### A.5 Verify storage is 0 (before any EVM call)
@@ -252,7 +252,7 @@ At the end you must have:
 1. Open the **Michelson-side explorer** URL from the official doc / dashboard (not the EVM explorer).
 2. Paste your `KT1` into the search box.
 3. Open the contract page and find **storage**.
-4. Confirm it shows **`0`**.
+4. Confirm it shows `**0`**.
 
 **Option 2 — RPC (`curl`)**
 
@@ -263,24 +263,24 @@ At the end you must have:
 curl -s "{MICHELSON_RPC}/chains/main/blocks/head/context/contracts/{KT1}/storage"
 ```
 
-3. Confirm the returned JSON still represents **`0`**.
+1. Confirm the returned JSON still represents `**0**`.
 
 Leave that terminal tab or browser tab open; you will come back to it after the EVM transaction.
 
 ---
 
-## Part B — EVM contract and MetaMask
+## Part B — EVM contract and wallet interaction
 
-### B.1 Connecting MetaMask
+### B.1 Connecting an EVM wallet
 
 1. Open the official doc / dashboard.
 2. Copy **EVM RPC**, **chain ID**, **currency symbol**, and **EVM explorer URL**.
-3. In MetaMask → **Settings** → **Networks** → **Add network**, paste those values.
-4. Switch MetaMask to that network.
+3. In MetaMask, Rabby, or your preferred EIP-1193 wallet → **Settings** → **Networks** → **Add network**, paste those values.
+4. Switch that wallet to the network.
 
 ### B.2 Writing the Solidity contract
 
-Create a Solidity contract like this. The constructor takes the Michelson `KT1` as a string. **`increment`** and **`decrement`** both call `callMichelson`; the counter you care about is **only** on Michelson.
+Create a Solidity contract like this. The constructor takes the Michelson `KT1` as a string. `**increment`** and `**decrement**` both call `callMichelson`; the counter you care about is **only** on Michelson.
 
 ```solidity
 // SPDX-License-Identifier: MIT
@@ -333,11 +333,11 @@ The constructor needs one value:
 
 - the `KT1` address string of the Michelson counter you originated in Part A (for example `"KT1…"`)
 
-### B.4 Calling `increment()` from MetaMask
+### B.4 Calling `increment()` from your EVM wallet
 
-1. In MetaMask, stay on the Tezos X EVM network.
+1. In your EVM wallet, stay on the Tezos X EVM network.
 2. Open your wallet’s contract interaction UI for the deployed `EvmToMichelsonCounter` (or use Remix’s “At Address” + ABI).
-3. Call **`increment()`**.
+3. Call `**increment()`**.
 4. Approve the transaction.
 5. When it confirms, copy the **transaction hash**.
 
@@ -348,7 +348,7 @@ The constructor needs one value:
 3. Open the transaction page.
 4. Confirm status **Success**.
 5. Open the **Logs** (or **Events**) tab.
-6. Find the **`CounterCalled`** event and check that **`action`** is `increment` and **`michelsonCounter`** matches your `KT1`.
+6. Find the `**CounterCalled`** event and check that `**action**` is `increment` and `**michelsonCounter**` matches your `KT1`.
 
 That answers the “why don’t we use logs?” point: you now have a concrete place in the UI to look.
 
@@ -356,16 +356,16 @@ That answers the “why don’t we use logs?” point: you now have a concrete p
 
 Go back to **A.5** (explorer or `curl`).
 
-If everything is wired correctly, storage should now be **`1`**.
+If everything is wired correctly, storage should now be `**1`**.
 
 ### B.7 Call `decrement()` once
 
-1. In MetaMask (same network), call **`decrement()`**.
+1. In your EVM wallet (same network), call `**decrement()**`.
 2. Confirm the transaction.
-3. On the EVM explorer, open the new transaction → **Logs** → confirm **`action`** is `decrement`.
+3. On the EVM explorer, open the new transaction → **Logs** → confirm `**action`** is `decrement`.
 4. Refresh Michelson storage.
 
-Storage should be back to **`0`**.
+Storage should be back to `**0**`.
 
 ---
 
@@ -375,12 +375,12 @@ Native Atomic Composability here means: the Michelson step runs **as part of** t
 
 Do this deliberately:
 
-1. Make sure Michelson storage is **`0`** (use `%reset` from Temple or your tool, or deploy fresh, or `increment` then `decrement` until you land on `0`).
-2. From MetaMask, call **`decrement()`** again.
+1. Make sure Michelson storage is `**0`** (use `%reset` from Temple or your tool, or deploy fresh, or `increment` then `decrement` until you land on `0`).
+2. From your EVM wallet, call `**decrement()**` again.
 
 **What you should see**
 
-- MetaMask / the RPC returns a **failed** or **reverted** transaction (wording depends on the wallet).
+- Your EVM wallet / the RPC returns a **failed** or **reverted** transaction (wording depends on the wallet).
 - On the EVM explorer, the transaction shows as **failed/reverted**, not success.
 - On the Michelson side, storage is **still `0`**.
 
@@ -433,4 +433,4 @@ In this single walkthrough you:
 - verified success using the **EVM explorer logs** and **Michelson storage**
 - triggered a **revert** to see atomic failure behaviour
 
-MetaMask handles the user-facing EVM transaction; no standalone relayer is required for the core story here.
+Your EVM wallet handles the user-facing transaction; no standalone relayer is required for the core story here.

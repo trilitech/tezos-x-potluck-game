@@ -1,7 +1,7 @@
 {
   "network": "tezosxTestnet",
-  "usdc": "0xDCD349f9c09085BA51ab0D317238664AA5d8A134",
-  "escrow": "0x0B978C6A83D6aa02b99756AbffAE6ED1ADd64AAA",
+  "usdc": "0x257De96BE880EF01894304701C4aF4ef08FCbF9a",
+  "escrow": "0x1488bdb4452D36a31cCBF70719Cd315DCf0f627C",
   "authorizedCaller": "0x6ce4d79d4E77402e1ef3417Fdda433aA744C6e1c",
-  "deployedAt": "2026-04-23T15:46:25.838Z"
+  "deployedAt": "2026-04-28T12:36:53.066Z"
 }

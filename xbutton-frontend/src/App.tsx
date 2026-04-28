@@ -10,6 +10,7 @@ import {
   PotButton,
   PotFooter,
   PotzLuckPotIcon,
+  createEventLogEntryId,
   shortAddr,
   type EventLogEntry,
   type EventLogTone,
@@ -225,6 +226,22 @@ type WalletState = {
   xtzBalanceRaw: bigint | null;
 };
 
+/** When not eligible for airdrop (or airdrop skipped), warn if play is still impossible: stake in USDC + XTZ for gas. */
+function getInsufficientPlayFundsEventLogMessage(w: WalletState): string | null {
+  if (!w.address || w.chainId !== CONFIG.chainId) return null;
+  if (w.usdcBalanceRaw == null || w.xtzBalanceRaw == null) return null;
+  const shortOnUsdc = w.usdcBalanceRaw < PRESS_AMOUNT_UNITS;
+  const shortOnXtz = w.xtzBalanceRaw === 0n;
+  if (!shortOnUsdc && !shortOnXtz) return null;
+  if (shortOnUsdc && shortOnXtz) {
+    return `You don't have enough USDC or XTZ to play. You need at least ${CONFIG.pressAmount} USDC and a little XTZ for gas on this network.`;
+  }
+  if (shortOnUsdc) {
+    return `You don't have enough USDC to play — you need at least ${CONFIG.pressAmount} USDC for each deposit.`;
+  }
+  return "You don't have enough XTZ for gas. Add a little native XTZ on this network so you can sign transactions, then try Play again.";
+}
+
 type FlowStepStatus = "upcoming" | "active" | "done";
 
 type FlowStep = {
@@ -283,7 +300,7 @@ function pressStepDefs(needsApproval: boolean): FlowStepDef[] {
       id: "relayer_cross_runtime",
       label: "Calling the NAC gateway on the EVM side",
       detail:
-        "The NAC gateway is invoked from the EVM interface so execution reaches Tezlink and updates the Michelson-interface storage with your deposit.",
+        "The NAC gateway is invoked from the EVM interface so execution reaches Tezlink and updates the game's Michelson-interface storage with your deposit.",
     },
   ];
 }
@@ -648,16 +665,59 @@ async function sleep(ms: number) {
   await new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+/** After airdrop, USDC/XTZ reads can lag; re-fetch until play looks possible or we time out. */
+async function refreshWalletUntilPlayBalancesVisible(
+  willAirdrop: boolean,
+  refresh: () => Promise<WalletState>,
+): Promise<WalletState> {
+  let w = await refresh();
+  if (!willAirdrop) {
+    return w;
+  }
+  for (let i = 0; i < 10; i++) {
+    if (!getInsufficientPlayFundsEventLogMessage(w)) {
+      return w;
+    }
+    await sleep(400);
+    w = await refresh();
+  }
+  return w;
+}
+
 function formatClockDuration(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }
 
+/** How long a session has been over (all units in whole seconds). No date library—keeps bundle small. */
 function formatEndedAgo(totalSeconds: number): string {
-  if (totalSeconds < 60) return `Ended ${totalSeconds}s ago`;
-  const minutes = Math.floor(totalSeconds / 60);
-  return `Ended ${minutes}m ago`;
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return "—";
+  }
+  if (totalSeconds < 60) {
+    return `Ended ${totalSeconds}s ago`;
+  }
+  if (totalSeconds < 3600) {
+    return `Ended ${Math.floor(totalSeconds / 60)}m ago`;
+  }
+  if (totalSeconds < 86400) {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    return m > 0 ? `Ended ${h}h ${m}m ago` : `Ended ${h}h ago`;
+  }
+  const days = Math.floor(totalSeconds / 86400);
+  if (totalSeconds < 86400 * 7) {
+    const h = Math.floor((totalSeconds % 86400) / 3600);
+    return h > 0 ? `Ended ${days}d ${h}h ago` : `Ended ${days}d ago`;
+  }
+  if (days < 30) {
+    return `Ended ${days}d ago`;
+  }
+  if (totalSeconds < 86400 * 365 * 5) {
+    return `Ended ${Math.max(1, Math.floor(totalSeconds / (86400 * 7)))}w+ ago`;
+  }
+  return "Ended a long time ago";
 }
 
 async function requestAirdrop(
@@ -852,15 +912,13 @@ function App() {
   const [connectWalletOptions, setConnectWalletOptions] = useState<Eip6963ProviderDetail[]>([]);
   /** Bumps so wallet listener effect re-binds to the selected EIP-1193 provider. */
   const [evmListenerKey, setEvmListenerKey] = useState(0);
-  const eventLogId = useRef(0);
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
   const pushEventLog = useCallback(
     (msg: string, tone: EventLogTone = "info", evmTxHash?: string, tezosOpsUrl?: string) => {
-      eventLogId.current += 1;
       setEventLog((prev) => [
         ...prev.slice(-19),
         {
-          id: eventLogId.current,
+          id: createEventLogEntryId(),
           msg,
           tone,
           ...(evmTxHash ? { txHash: evmTxHash } : {}),
@@ -1386,6 +1444,12 @@ function App() {
     const funded = await ensureTestnetFundsIfNeeded(connectedWallet);
     const { willAirdrop } = funded;
 
+    const wAfterFunds = await refreshWalletUntilPlayBalancesVisible(willAirdrop, () => refreshWalletState(false));
+    let insufficientMsg = getInsufficientPlayFundsEventLogMessage(wAfterFunds);
+    if (willAirdrop && insufficientMsg) {
+      insufficientMsg = null;
+    }
+
     const latestGameState = await refreshGameState();
     if (!latestGameState) {
       setActionState({
@@ -1395,16 +1459,26 @@ function App() {
       return;
     }
 
-    pushEventLog(
-      willAirdrop
-        ? "Testnet funds are in your wallet. Click Play when you are ready to open or join a round and deposit."
-        : "Wallet connected on Tezos X. Click Play when you are ready to deposit or start a new round.",
-      "info",
-    );
+    if (insufficientMsg) {
+      pushEventLog(insufficientMsg, "error");
+      pushEventLog(
+        `You can get testnet funds at ${faucetUrl.replace(/\/$/, "")} or reconnect after acquiring USDC and XTZ for this network.`,
+        "info",
+      );
+    } else {
+      pushEventLog(
+        willAirdrop
+          ? "Testnet funds are in your wallet. Click Play when you are ready to start or join a round."
+          : "Wallet connected on Tezos X. Click Play when you are ready to deposit or start a new round.",
+        "info",
+      );
+    }
 
     setActionState({
       kind: "idle",
-      message: `Click Play to start or join a round and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
+      message: insufficientMsg
+        ? `Add at least ${CONFIG.pressAmount} USDC and a little XTZ for gas, then try Play.`
+        : `Click Play to start or join a round and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
     });
   }
 
@@ -1497,6 +1571,12 @@ function App() {
       "info",
     );
     const { willAirdrop } = await ensureTestnetFundsIfNeeded(w);
+    const wAfterFunds = await refreshWalletUntilPlayBalancesVisible(willAirdrop, () => refreshWalletState(false));
+    let insufficientMsg = getInsufficientPlayFundsEventLogMessage(wAfterFunds);
+    if (willAirdrop && insufficientMsg) {
+      insufficientMsg = null;
+    }
+
     const latestGameState = await refreshGameState();
     if (!latestGameState) {
       setActionState({
@@ -1505,15 +1585,25 @@ function App() {
       });
       return;
     }
-    pushEventLog(
-      willAirdrop
-        ? "Testnet funds are in your wallet. Click Play when you are ready to open or join a round and deposit."
-        : `Network ready on ${TEZOSX_EVM_TESTNET_NAME}. Click Play when you are ready to deposit or start a new round.`,
-      "info",
-    );
+    if (insufficientMsg) {
+      pushEventLog(insufficientMsg, "error");
+      pushEventLog(
+        `You can get testnet funds at ${faucetUrl.replace(/\/$/, "")} or reconnect after acquiring USDC and XTZ for this network.`,
+        "info",
+      );
+    } else {
+      pushEventLog(
+        willAirdrop
+          ? "Testnet funds are in your wallet. Click Play when you are ready to start or join a round."
+          : `Network ready on ${TEZOSX_EVM_TESTNET_NAME}. Click Play when you are ready to deposit or start a new round.`,
+        "info",
+      );
+    }
     setActionState({
       kind: "idle",
-      message: `Click Play to start or join a round and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
+      message: insufficientMsg
+        ? `Add at least ${CONFIG.pressAmount} USDC and a little XTZ for gas, then try Play.`
+        : `Click Play to start or join a round and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
     });
   }
 
@@ -1604,7 +1694,7 @@ function App() {
       const elapsed = Math.floor((Date.now() - t0) / 1000);
       setActionState({
         kind: "pending",
-        message: `Calling the NAC gateway on the EVM side to reach Tezlink and update the Michelson-interface storage with your deposit… (${elapsed}s)`,
+        message: `Calling the NAC gateway on the EVM side to reach Tezlink and update the game's Michelson-interface storage with your deposit… (${elapsed}s)`,
         steps: markFlowSteps(stepDefs, "relayer_cross_runtime"),
         txHash: depositTxHash,
       });
@@ -1654,6 +1744,16 @@ function App() {
 
     if (latestWallet.chainId !== CONFIG.chainId) {
       setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_TESTNET_NAME} first.` });
+      return;
+    }
+
+    const insufficientForPlay = getInsufficientPlayFundsEventLogMessage(latestWallet);
+    if (insufficientForPlay) {
+      pushEventLog(insufficientForPlay, "error");
+      setActionState({
+        kind: "error",
+        message: insufficientForPlay,
+      });
       return;
     }
 
@@ -1728,7 +1828,7 @@ function App() {
       setDepositFxId((id) => id + 1);
       setActionState({
         kind: "success",
-        message: "Done. Your deposit is in and the Michelson-interface storage is updated.",
+        message: `Done. You deposited ${CONFIG.pressAmount} USDC into the game pot.`,
         txHash: tx.hash,
         tezosOpsUrl,
         steps: completeFlowSteps(depositSteps),
@@ -2050,6 +2150,10 @@ function App() {
   }, [potUiState, connectWallet, switchNetwork, startNewSession, pressButton, waitForActiveRound]);
 
   const potCopy = useMemo(() => {
+    const userIsLastDepositor =
+      Boolean(walletState.address) &&
+      Boolean(gameState?.lastPlayerAddress) &&
+      walletState.address!.toLowerCase() === gameState!.lastPlayerAddress!.toLowerCase();
     switch (potUiState) {
       case "connect":
         return { label: "Connect", sub: "wallet to play" };
@@ -2058,13 +2162,16 @@ function App() {
       case "idle":
         return { label: "Play", sub: null };
       case "play":
-        return { label: "Play", sub: `${CONFIG.pressAmount} USDC` };
+        return {
+          label: userIsLastDepositor ? "Play Again" : "Play",
+          sub: `${CONFIG.pressAmount} USDC`,
+        };
       case "depositing":
         return { label: "…", sub: "working" };
       case "won":
         return { label: "Play", sub: null };
     }
-  }, [potUiState, CONFIG.pressAmount]);
+  }, [potUiState, CONFIG.pressAmount, walletState.address, gameState?.lastPlayerAddress]);
 
   const potProgressShown =
     potUiState === "play" || potUiState === "depositing" ? potRingProgress : null;
