@@ -399,6 +399,156 @@ body {
 .claim-under-ends {
   width: fit-content;
 }
+.session-history {
+  margin-top: 10px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.session-history-h {
+  font-size: 12px;
+  color: var(--fg-3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+.session-history-link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  font-size: 12px;
+  color: var(--fg-3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 500;
+  cursor: pointer;
+}
+.session-history-link:hover {
+  color: var(--fg-1);
+}
+.session-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.session-history-item {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.session-history-top,
+.session-history-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+.session-history-top {
+  color: var(--fg-1);
+  font-variant-numeric: tabular-nums;
+}
+.session-history-bottom {
+  color: var(--fg-3);
+}
+.session-history-bottom a {
+  color: var(--fg-1);
+  text-decoration: none;
+}
+.session-history-bottom a:hover {
+  text-decoration: underline;
+}
+.session-history-empty {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.sessions-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px 28px 36px;
+}
+.sessions-hero h1 {
+  margin: 0 0 8px;
+  font-size: clamp(2rem, 5vw, 3rem);
+  letter-spacing: -0.04em;
+}
+.sessions-hero p {
+  margin: 0;
+  max-width: 48rem;
+  color: var(--fg-2);
+  line-height: 1.6;
+}
+.sessions-claim-card,
+.sessions-list-card {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.sessions-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sessions-card-head h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+}
+.sessions-claim-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sessions-list-item {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sessions-list-top,
+.sessions-list-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sessions-list-top {
+  font-variant-numeric: tabular-nums;
+}
+.sessions-list-mid,
+.sessions-list-bottom {
+  color: var(--fg-2);
+  font-size: 14px;
+}
+.sessions-list-bottom a {
+  color: var(--fg-1);
+  text-decoration: none;
+}
+.sessions-list-bottom a:hover {
+  text-decoration: underline;
+}
 
 /* Pot stage (center) */
 .pot-stage {
@@ -1118,6 +1268,9 @@ body {
     grid-column: auto;
   }
   .session-state { margin-top: 0; }
+  .sessions-claim-grid {
+    grid-template-columns: 1fr;
+  }
 }
 @media (max-width: 640px) {
   .pl-landing {

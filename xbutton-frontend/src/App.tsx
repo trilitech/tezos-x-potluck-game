@@ -933,7 +933,7 @@ function App() {
     message: "Connect your wallet, then press the button to send 1 USDC into the escrow.",
   });
 
-  const [shellView, setShellView] = useState<"landing" | "game">("landing");
+  const [shellView, setShellView] = useState<"landing" | "game" | "sessions">("landing");
   const [tourOpen, setTourOpen] = useState(false);
   const [tourStep, setTourStep] = useState(0);
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
@@ -1821,11 +1821,47 @@ function App() {
 
     const insufficientForPlay = getInsufficientPlayFundsEventLogMessage(latestWallet);
     if (insufficientForPlay) {
-      pushEventLog(insufficientForPlay, "error");
-      setActionState({
-        kind: "error",
-        message: insufficientForPlay,
-      });
+      const maybeAirdrop =
+        latestWallet.usdcBalanceRaw === 0n || latestWallet.xtzBalanceRaw === 0n;
+
+      if (maybeAirdrop) {
+        try {
+          setActionState({
+            kind: "pending",
+            message: "You need testnet funds to play — we’re airdropping your wallet now…",
+          });
+          const { willAirdrop } = await ensureTestnetFundsIfNeeded(latestWallet);
+          const fundedWallet = await refreshWalletUntilPlayBalancesVisible(
+            willAirdrop,
+            () => refreshWalletState(false),
+          );
+          const stillInsufficient = getInsufficientPlayFundsEventLogMessage(fundedWallet);
+
+          setActionState({
+            kind: stillInsufficient ? "error" : "idle",
+            message: stillInsufficient
+              ? stillInsufficient
+              : `Your wallet is topped up. Press Play again to deposit ${CONFIG.pressAmount} USDC into the pot.`,
+          });
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))
+          ) {
+            setActionState({ kind: "error", message: formatAirdropError(error) });
+          } else {
+            setActionState({
+              kind: "error",
+              message: error instanceof Error ? error.message : insufficientForPlay,
+            });
+          }
+        }
+      } else {
+        setActionState({
+          kind: "error",
+          message: insufficientForPlay,
+        });
+      }
       depositInFlightRef.current = false;
       return;
     }
@@ -2161,6 +2197,12 @@ function App() {
     setShellView("landing");
   }, []);
 
+  const goToGame = useCallback(() => {
+    setWalletMenuOpen(false);
+    setTourOpen(false);
+    setShellView("game");
+  }, []);
+
   const openTourFromGame = useCallback(() => {
     setWalletMenuOpen(false);
     setTourStep(0);
@@ -2357,6 +2399,128 @@ function App() {
     );
   }
 
+  if (shellView === "sessions") {
+    return (
+      <>
+        <div className="bg-grid" />
+        <div className="bg-glow" />
+        <div className="pl-shell">
+          <header className="pl-topbar">
+            <button type="button" className="brand brand-button" onClick={goToLanding}>
+              <div className="brand-mark brand-mark-pot" aria-hidden>
+                <PotzLuckPotIcon />
+              </div>
+              <div className="brand-lockup">
+                <span className="brand-name">
+                  <PotzLuckMark />
+                </span>
+                <span className="brand-sub">on Tezos X</span>
+              </div>
+            </button>
+            <div className="topbar-right">
+              <button type="button" className="btn ghost sm" onClick={goToGame}>
+                Back to game
+              </button>
+              <a
+                className="btn ghost sm"
+                href={TEZOS_X_TESTNET_DASHBOARD_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Explore Tezos X ↗
+              </a>
+            </div>
+          </header>
+
+          <main className="sessions-page">
+            <section className="sessions-hero">
+              <h1>Sessions</h1>
+              <p>Review the most recent completed rounds and claim the current winning round when you are eligible.</p>
+            </section>
+
+            <section className="sessions-claim-card">
+              <div className="sessions-card-head">
+                <h2>Current round claim</h2>
+                <span className={`session-state ${sessionActive ? "active" : ""}`}>
+                  <span className="dot" />
+                  {sessionActive ? "Session active" : "No active session"}
+                </span>
+              </div>
+              <div className="sessions-claim-grid">
+                <div className="stat-row">
+                  <div className="stat-l">Last player</div>
+                  <div className="stat-v">{lastPlayerDisplay}</div>
+                </div>
+                <div className="stat-row">
+                  <div className="stat-l">Pot size</div>
+                  <div className="stat-v">
+                    <b>{gameState ? gameState.potDisplay : "—"}</b> <span>USDC</span>
+                  </div>
+                </div>
+                <div className="stat-row">
+                  <div className="stat-l">Status</div>
+                  <div className="stat-v">{sessionLabel}</div>
+                </div>
+              </div>
+              {canClaim ? (
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={() => void claimContract()}
+                  disabled={!canClaim}
+                >
+                  {isClaiming ? "Claiming..." : "Claim Winnings"}
+                </button>
+              ) : (
+                <p className="side-note">
+                  {sessionActive
+                    ? "The current round is still active."
+                    : "The claim button only becomes available to the current winning wallet for the current on-chain round."}
+                </p>
+              )}
+            </section>
+
+            <section className="sessions-list-card">
+              <div className="sessions-card-head">
+                <h2>Last 10 completed sessions</h2>
+              </div>
+              {recentSessions.length > 0 ? (
+                <div className="sessions-list">
+                  {recentSessions.map((session) => (
+                    <article key={`${session.sessionId}-${session.txHash ?? "nohash"}`} className="sessions-list-item">
+                      <div className="sessions-list-top">
+                        <strong>Session #{session.sessionId}</strong>
+                        <span>{session.potDisplay} USDC</span>
+                      </div>
+                      <div className="sessions-list-mid">Winner: {shortAddr(session.winner)}</div>
+                      <div className="sessions-list-bottom">
+                        <span>{formatEndedAgo(Math.max(0, Math.floor(Date.now() / 1000) - session.paidOutAt))}</span>
+                        {session.txHash ? (
+                          <a href={evmTxUrl(session.txHash)} target="_blank" rel="noreferrer">
+                            View payout
+                          </a>
+                        ) : null}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="side-note">No completed sessions yet.</p>
+              )}
+            </section>
+          </main>
+        </div>
+        <NetworkInfoModal open={networkInfoOpen} onClose={() => setNetworkInfoOpen(false)} />
+        <WalletPickerModal
+          open={walletPickerOpen}
+          options={connectWalletOptions}
+          onSelect={handleWalletPickerSelect}
+          onClose={handleWalletPickerClose}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <div className="bg-grid" />
@@ -2461,7 +2625,7 @@ function App() {
                 {sessionActive ? "Session active" : "No active session"}
               </div>
               <div className="session-history">
-                <div className="session-history-h">Last 10 sessions</div>
+                <div className="session-history-h">Recent completed sessions</div>
                 {recentSessions.length > 0 ? (
                   <div className="session-history-list">
                     {recentSessions.map((session) => (
