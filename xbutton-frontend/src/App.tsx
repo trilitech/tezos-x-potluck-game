@@ -2070,7 +2070,7 @@ function App() {
     setIsStartingSession(true);
     setActionState({
       kind: "pending",
-      message: "Starting a new round on Tezlink…",
+      message: "Confirm the new game session in your wallet to start a round on Tezlink.",
       steps: markFlowSteps(START_SESSION_STEP_DEFS, "wallet_start"),
     });
     try {
@@ -2092,7 +2092,7 @@ function App() {
       );
       setActionState({
         kind: "pending",
-        message: `Waiting for your session transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
+        message: `Waiting for your new game session transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
         steps: markFlowSteps(START_SESSION_STEP_DEFS, "evm_start"),
         txHash: tx.hash,
       });
