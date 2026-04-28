@@ -1759,7 +1759,7 @@ function App() {
       const elapsed = Math.floor((Date.now() - t0) / 1000);
       setActionState({
         kind: "pending",
-        message: `Calling the NAC gateway on the EVM interface to reach Tezlink and update the game's Michelson-interface storage with your deposit… (${elapsed}s)`,
+        message: `Deposit confirmed on the EVM interface. Calling the NAC gateway to update Tezlink game state… (${elapsed}s)`,
         steps: markFlowSteps(stepDefs, "relayer_cross_runtime"),
         txHash: depositTxHash,
       });
@@ -1886,7 +1886,7 @@ function App() {
       const tx = await escrow.deposit(PRESS_AMOUNT_UNITS);
       setActionState({
         kind: "pending",
-        message: `Waiting for your deposit transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
+        message: `Waiting for your ${CONFIG.pressAmount} USDC deposit to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
         steps: markFlowSteps(depositSteps, "evm_confirm"),
         txHash: tx.hash,
       });
