@@ -1989,7 +1989,7 @@ function App() {
 
       setActionState({
         kind: "pending",
-        message: "Confirm the claim in your wallet.",
+        message: "Winner wallet confirmed from Tezlink storage. Confirm the claim in your wallet.",
         steps: markFlowSteps(CLAIM_STEP_DEFS, "wallet_claim"),
       });
 
