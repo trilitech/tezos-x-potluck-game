@@ -68,7 +68,7 @@ export function createEventLogEntryId(): string {
   return `ev-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
-/** Longer phrases first so we do not link the wrong substring (e.g. "claim" inside "claimed"). */
+/** Longer phrases first so we do not link the wrong substring (e.g. "deposit" inside "deposited", "claim" inside "claimed"). */
 const TX_LINK_PHRASES = [
   "session transaction",
   "deposit transaction",
@@ -78,6 +78,7 @@ const TX_LINK_PHRASES = [
   "payout complete",
   "claim submitted",
   "session",
+  "deposited",
   "deposit",
   "approval",
 ] as const;
