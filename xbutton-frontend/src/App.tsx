@@ -936,6 +936,8 @@ function App() {
   const dismissDepositFx = useCallback(() => {
     setDepositFxId(0);
   }, []);
+  const depositInFlightRef = useRef(false);
+  const freezeGameStateUiRef = useRef(false);
 
   const hasInjectedWallet =
     typeof window === "undefined" || eip6963Wallets === null || eip6963Wallets.length > 0;
@@ -1189,10 +1191,12 @@ function App() {
     }
   }, []);
 
-  const refreshGameState = useCallback(async () => {
+  const refreshGameState = useCallback(async (syncUi = true) => {
     try {
       const nextState = await fetchGameState();
-      setGameState(nextState);
+      if (syncUi && !freezeGameStateUiRef.current) {
+        setGameState(nextState);
+      }
       setGameStateError(null);
       return nextState;
     } catch (error) {
@@ -1694,7 +1698,7 @@ function App() {
       const elapsed = Math.floor((Date.now() - t0) / 1000);
       setActionState({
         kind: "pending",
-        message: `Calling the NAC gateway on the EVM side to reach Tezlink and update the game's Michelson-interface storage with your deposit… (${elapsed}s)`,
+        message: `Calling the NAC gateway on the EVM interface to reach Tezlink and update the game's Michelson-interface storage with your deposit… (${elapsed}s)`,
         steps: markFlowSteps(stepDefs, "relayer_cross_runtime"),
         txHash: depositTxHash,
       });
@@ -1716,7 +1720,6 @@ function App() {
       } catch {
         throw new Error("GAME_SERVICE_UNAVAILABLE");
       }
-      setGameState(nextState);
       setGameStateError(null);
 
       if (BigInt(nextState.potRaw) > BigInt(previousState.potRaw)) {
@@ -1729,9 +1732,15 @@ function App() {
   }
 
   async function pressButton() {
+    if (depositInFlightRef.current) {
+      return;
+    }
+    depositInFlightRef.current = true;
+
     const ethereum = getEvmProvider();
     if (!ethereum) {
       setActionState({ kind: "error", message: "No browser wallet is available in this browser." });
+      depositInFlightRef.current = false;
       return;
     }
 
@@ -1739,11 +1748,13 @@ function App() {
     const latestWallet = await refreshWalletState(false);
     if (!latestWallet.address) {
       setActionState({ kind: "error", message: "Connect your wallet before pressing the button." });
+      depositInFlightRef.current = false;
       return;
     }
 
     if (latestWallet.chainId !== CONFIG.chainId) {
       setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_TESTNET_NAME} first.` });
+      depositInFlightRef.current = false;
       return;
     }
 
@@ -1754,9 +1765,11 @@ function App() {
         kind: "error",
         message: insufficientForPlay,
       });
+      depositInFlightRef.current = false;
       return;
     }
 
+    freezeGameStateUiRef.current = true;
     setIsSubmitting(true);
     const approvalNeeded =
       latestWallet.usdcAllowance !== null && latestWallet.usdcAllowance < PRESS_AMOUNT_UNITS;
@@ -1819,7 +1832,9 @@ function App() {
 
       await tx.wait();
 
-      await waitForGameStateUpdate(currentState, depositSteps, tx.hash);
+      const updatedState = await waitForGameStateUpdate(currentState, depositSteps, tx.hash);
+      freezeGameStateUiRef.current = false;
+      setGameState(updatedState);
       await refreshWalletState(false);
 
       const tezosOpDirect = await fetchLatestTezosOpExplorerUrl();
@@ -1828,7 +1843,7 @@ function App() {
       setDepositFxId((id) => id + 1);
       setActionState({
         kind: "success",
-        message: `Done. You deposited ${CONFIG.pressAmount} USDC into the game pot.`,
+        message: `Done. You deposited ${CONFIG.pressAmount} USDC into the game pot. Potz luck to you!`,
         txHash: tx.hash,
         tezosOpsUrl,
         steps: completeFlowSteps(depositSteps),
@@ -1836,7 +1851,9 @@ function App() {
     } catch (error) {
       setActionState({ kind: "error", message: formatPressButtonError(error) });
     } finally {
+      freezeGameStateUiRef.current = false;
       setIsSubmitting(false);
+      depositInFlightRef.current = false;
     }
   }
 
