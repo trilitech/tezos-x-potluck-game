@@ -2009,7 +2009,7 @@ function App() {
     setIsStartingSession(true);
     setActionState({
       kind: "pending",
-      message: "Confirm the new session in your wallet.",
+      message: `Starting a new round on ${TEZOSX_EVM_TESTNET_NAME}…`,
       steps: markFlowSteps(START_SESSION_STEP_DEFS, "wallet_start"),
     });
     try {
@@ -2041,7 +2041,7 @@ function App() {
         leaveStartingSessionFlag = true;
         setActionState({
           kind: "pending",
-          message: `New session started (${DEFAULT_SESSION_DURATION_SEC / 60} min). Syncing the round, then continuing to your USDC approval and deposit…`,
+          message: "Round created. Syncing game state on Tezlink…",
           txHash: tx.hash,
           steps: completeFlowSteps(START_SESSION_STEP_DEFS),
         });
@@ -2136,6 +2136,10 @@ function App() {
           });
           return;
         }
+        setActionState({
+          kind: "pending",
+          message: `Round ready. Confirm your ${CONFIG.pressAmount} USDC deposit.`,
+        });
         await pressButton();
       } finally {
         setIsStartingSession(false);
@@ -2159,6 +2163,10 @@ function App() {
           });
           return;
         }
+        setActionState({
+          kind: "pending",
+          message: `Round ready. Confirm your ${CONFIG.pressAmount} USDC deposit.`,
+        });
         await pressButton();
       } finally {
         setIsStartingSession(false);
