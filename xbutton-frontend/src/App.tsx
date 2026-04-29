@@ -523,6 +523,50 @@ function isUserRejectedWalletError(error: unknown): boolean {
   return e.code === 4001 || e.code === "ACTION_REJECTED";
 }
 
+/**
+ * EIP-1193 error `code` as returned by the wallet, or wrapped by ethers / extension (e.g. 4902 inside
+ * `data.originalError` when the top-level `code` is -32603).
+ */
+function getWalletRpcErrorCode(error: unknown): number | undefined {
+  const e = error as {
+    code?: number | string;
+    data?: { code?: number; originalError?: { code?: number } };
+    info?: { error?: { code?: number } };
+    cause?: { code?: number };
+  };
+  const n = (c: number | string | undefined): number | undefined => {
+    if (c === undefined) return undefined;
+    if (typeof c === "number" && Number.isFinite(c)) return c;
+    if (typeof c === "string" && /^-?\d+$/.test(c)) return parseInt(c, 10);
+    return undefined;
+  };
+  return (
+    n(e.code) ??
+    n(e.data?.originalError?.code) ??
+    n(e.data?.code) ??
+    n(e.info?.error?.code) ??
+    n(e.cause?.code)
+  );
+}
+
+/** Unrecognized / not-yet-added chain (EIP-1193: 4902), including wrapped provider shapes. */
+function isUnrecognizedChainError(error: unknown): boolean {
+  if (getWalletRpcErrorCode(error) === 4902) return true;
+  if (getWalletRpcErrorCode(error) === -32603) {
+    let blob = "";
+    try {
+      blob = JSON.stringify(error);
+    } catch {
+      /* ignore */
+    }
+    if (blob.includes("4902")) return true;
+  }
+  const msg = `${(error as Error)?.message ?? ""} ${
+    (error as { data?: { originalError?: { message?: string } } })?.data?.originalError?.message ?? ""
+  }`.toLowerCase();
+  return msg.includes("unrecognized") && msg.includes("chain");
+}
+
 /** Rabby and some wallets throw when the dapp network is not in the wallet’s registry (e.g. `defaultChain` is null). */
 function isWalletNetworkSetupError(error: unknown): boolean {
   const s = String(
@@ -1803,30 +1847,49 @@ function App() {
     const ethereum = getEvmProvider();
     if (!ethereum) return;
 
+    const addChainParam = {
+      chainId: CONFIG.chainIdHex,
+      chainName: TEZOSX_EVM_TESTNET_NAME,
+      rpcUrls: [CONFIG.evmRpc],
+      nativeCurrency: {
+        name: "XTZ",
+        symbol: "XTZ",
+        decimals: 18,
+      },
+      blockExplorerUrls: [CONFIG.evmExplorerUrl],
+    } as const;
+
     try {
       await ethereum.request?.({
         method: "wallet_switchEthereumChain",
         params: [{ chainId: CONFIG.chainIdHex }],
       });
     } catch (error) {
-      const switchError = error as { code?: number };
-
-      if (switchError.code === 4902) {
-        await ethereum.request?.({
-          method: "wallet_addEthereumChain",
-          params: [
-            {
-              chainId: CONFIG.chainIdHex,
-              chainName: TEZOSX_EVM_TESTNET_NAME,
-              rpcUrls: [CONFIG.evmRpc],
-              nativeCurrency: {
-                name: "XTZ",
-                symbol: "XTZ",
-                decimals: 18,
-              },
-            },
-          ],
-        });
+      if (isUserRejectedWalletError(error)) {
+        return;
+      }
+      if (isUnrecognizedChainError(error)) {
+        try {
+          await ethereum.request?.({
+            method: "wallet_addEthereumChain",
+            params: [addChainParam],
+          });
+          await ethereum.request?.({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: CONFIG.chainIdHex }],
+          });
+        } catch (addOrSwitchErr) {
+          if (isUserRejectedWalletError(addOrSwitchErr)) {
+            return;
+          }
+          const detail =
+            addOrSwitchErr instanceof Error ? addOrSwitchErr.message : String(addOrSwitchErr);
+          pushEventLog(
+            `Could not add ${TEZOSX_EVM_TESTNET_NAME} in your wallet. In Rabby, ensure “Custom network” / testnets are enabled, add the RPC from Network information, then try again. ${detail}`,
+            "error",
+          );
+          return;
+        }
       } else {
         throw error;
       }
