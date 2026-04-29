@@ -286,6 +286,10 @@ function markRelayerXtzAirdropped(address: string | null, chainIdLike: bigint | 
   writeLocalFlag(relayerWalletStorageKey(RELAYER_XTZ_AIRDROP_KEY_PREFIX, chainIdLike, address), true);
 }
 
+function logDepositSyncDebug(stage: string, details: Record<string, unknown>) {
+  console.info(`[potzluck][deposit-sync] ${stage}`, details);
+}
+
 /** When not eligible for airdrop (or airdrop skipped), warn if play is still impossible: stake in USDC + XTZ for gas. */
 function getInsufficientPlayFundsEventLogMessage(w: WalletState): string | null {
   if (!w.address || w.chainId !== CONFIG.chainId) return null;
@@ -719,6 +723,46 @@ async function fetchPayoutTxHash(
     /* RPC may reject wide log queries */
   }
   return null;
+}
+
+async function fetchEscrowDepositsNearTx(
+  provider: ethers.BrowserProvider,
+  txHash: string,
+): Promise<
+  Array<{
+    transactionHash: string | null;
+    blockNumber: number;
+    logIndex: number;
+    player: string | null;
+    amount: string | null;
+  }>
+> {
+  try {
+    const receipt = await provider.getTransactionReceipt(txHash);
+    if (!receipt) return [];
+    const escrow = new ethers.Contract(CONFIG.potAddress, ESCROW_ABI, provider);
+    const fromBlock = Math.max(0, receipt.blockNumber - 2);
+    const toBlock = receipt.blockNumber + 2;
+    const logs = await escrow.queryFilter(escrow.filters.Deposited(), fromBlock, toBlock);
+    return logs
+      .map((log) => {
+        const parsed = escrow.interface.parseLog(log);
+        if (!parsed) return null;
+        const player = parsed.args[0] as string;
+        const amount = parsed.args[1] as bigint;
+        return {
+          transactionHash: log.transactionHash ?? null,
+          blockNumber: log.blockNumber,
+          logIndex: log.index,
+          player: player ? ethers.getAddress(player) : null,
+          amount: amount != null ? amount.toString() : null,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null);
+  } catch (error) {
+    console.warn("[potzluck][deposit-sync] failed to inspect escrow deposit logs", error);
+    return [];
+  }
 }
 
 async function fetchRecentCompletedSessions(limit = 10): Promise<SessionHistoryEntry[]> {
@@ -1820,9 +1864,11 @@ function App() {
     previousState: GameState,
     stepDefs: FlowStepDef[],
     depositTxHash: string,
+    provider: ethers.BrowserProvider,
   ) {
     const deadline = Date.now() + CONFIG.gameStateWaitTimeoutMs;
     const t0 = Date.now();
+    let attempts = 0;
 
     const updateGameSyncProgress = () => {
       const elapsed = Math.floor((Date.now() - t0) / 1000);
@@ -1839,23 +1885,78 @@ function App() {
     while (true) {
       const now = Date.now();
       if (now >= deadline) {
+        const escrowDeposits = await fetchEscrowDepositsNearTx(provider, depositTxHash);
+        logDepositSyncDebug("timeout-before-poll", {
+          depositTxHash,
+          attempts,
+          elapsedMs: Date.now() - t0,
+          escrowDeposits,
+          previousPotRaw: previousState.potRaw,
+          previousSessionEnd: previousState.sessionEnd,
+          previousClaimed: previousState.claimed,
+          previousLastPlayerAddress: previousState.lastPlayerAddress,
+          previousLastPlayerTezos: previousState.lastPlayerTezos,
+        });
         throw new Error("GAME_STATE_RELAYER_TIMEOUT");
       }
       const sleepMs = Math.min(CONFIG.pollIntervalMs, deadline - now);
       await sleep(sleepMs);
       updateGameSyncProgress();
+      attempts += 1;
       let nextState: GameState;
       try {
         nextState = await fetchGameState();
       } catch {
+        logDepositSyncDebug("storage-fetch-failed", {
+          depositTxHash,
+          attempts,
+          elapsedMs: Date.now() - t0,
+        });
         throw new Error("GAME_SERVICE_UNAVAILABLE");
       }
       setGameStateError(null);
+      logDepositSyncDebug("storage-poll", {
+        depositTxHash,
+        attempts,
+        elapsedMs: Date.now() - t0,
+        previousPotRaw: previousState.potRaw,
+        nextPotRaw: nextState.potRaw,
+        previousLastPlayerAddress: previousState.lastPlayerAddress,
+        nextLastPlayerAddress: nextState.lastPlayerAddress,
+        previousLastPlayerTezos: previousState.lastPlayerTezos,
+        nextLastPlayerTezos: nextState.lastPlayerTezos,
+        nextSessionEnd: nextState.sessionEnd,
+        nextClaimed: nextState.claimed,
+        nextPayoutCompleted: nextState.payoutCompleted,
+      });
 
       if (BigInt(nextState.potRaw) > BigInt(previousState.potRaw)) {
+        logDepositSyncDebug("storage-updated", {
+          depositTxHash,
+          attempts,
+          elapsedMs: Date.now() - t0,
+          previousPotRaw: previousState.potRaw,
+          nextPotRaw: nextState.potRaw,
+          nextLastPlayerAddress: nextState.lastPlayerAddress,
+          nextLastPlayerTezos: nextState.lastPlayerTezos,
+        });
         return nextState;
       }
       if (Date.now() >= deadline) {
+        const escrowDeposits = await fetchEscrowDepositsNearTx(provider, depositTxHash);
+        logDepositSyncDebug("timeout-after-poll", {
+          depositTxHash,
+          attempts,
+          elapsedMs: Date.now() - t0,
+          escrowDeposits,
+          previousPotRaw: previousState.potRaw,
+          nextPotRaw: nextState.potRaw,
+          nextLastPlayerAddress: nextState.lastPlayerAddress,
+          nextLastPlayerTezos: nextState.lastPlayerTezos,
+          nextSessionEnd: nextState.sessionEnd,
+          nextClaimed: nextState.claimed,
+          nextPayoutCompleted: nextState.payoutCompleted,
+        });
         throw new Error("GAME_STATE_RELAYER_TIMEOUT");
       }
     }
@@ -1996,9 +2097,27 @@ function App() {
         txHash: tx.hash,
       });
 
-      await tx.wait();
+      const txReceipt = await tx.wait();
+      logDepositSyncDebug("deposit-confirmed", {
+        depositTxHash: tx.hash,
+        blockNumber: txReceipt?.blockNumber ?? null,
+        status: txReceipt?.status ?? null,
+        from: tx.from ?? null,
+        to: tx.to ?? null,
+        walletAddress: latestWallet.address,
+        walletChainId: latestWallet.chainId?.toString() ?? null,
+        walletIsRelayer: isRelayerWalletLocallyMarked(latestWallet),
+        walletHasRelayerXtzAirdropFlag: hasRelayerXtzAirdropFlag(latestWallet),
+        walletXtzBalanceRaw: latestWallet.xtzBalanceRaw?.toString() ?? null,
+        walletUsdcBalanceRaw: latestWallet.usdcBalanceRaw?.toString() ?? null,
+      });
+      const escrowDeposits = await fetchEscrowDepositsNearTx(provider, tx.hash);
+      logDepositSyncDebug("escrow-deposit-events", {
+        depositTxHash: tx.hash,
+        escrowDeposits,
+      });
 
-      const updatedState = await waitForGameStateUpdate(currentState, depositSteps, tx.hash);
+      const updatedState = await waitForGameStateUpdate(currentState, depositSteps, tx.hash, provider);
       freezeGameStateUiRef.current = false;
       setGameState(updatedState);
       await refreshWalletState(false);
