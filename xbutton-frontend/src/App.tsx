@@ -61,6 +61,9 @@ const airdropApiUrl = import.meta.env.VITE_AIRDROP_API_URL?.trim() || DEFAULT_AI
 const PAYOUT_SUCCESS_MESSAGE = "The winner has been paid.";
 const AIRDROP_USDC_AMOUNT = "5";
 const AIRDROP_XTZ_AMOUNT = "5";
+const TEZOS_X_RELAYER_RDNS = "com.tezosx.relayer";
+const RELAYER_WALLET_KEY_PREFIX = "potzluck_relayer_wallet_v1";
+const RELAYER_XTZ_AIRDROP_KEY_PREFIX = "potzluck_relayer_xtz_airdrop_v1";
 
 function airdropDeliveredLogMessage(usdc: boolean, xtz: boolean): string {
   if (usdc && xtz) {
@@ -235,12 +238,60 @@ type SessionHistoryEntry = {
   paidOutAt: number;
 };
 
+function relayerWalletStorageKey(prefix: string, chainIdLike: bigint | null, address: string | null): string | null {
+  if (!chainIdLike || !address) return null;
+  return `${prefix}:${chainIdLike.toString()}:${address.toLowerCase()}`;
+}
+
+function readLocalFlag(key: string | null): boolean {
+  if (!key || typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeLocalFlag(key: string | null, value: boolean) {
+  if (!key || typeof window === "undefined") return;
+  try {
+    if (value) localStorage.setItem(key, "1");
+    else localStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
+function isTezosRelayerProviderLike(
+  provider: SelectedEthereumProvider | null | undefined,
+  rdns: string | null | undefined,
+): boolean {
+  const maybe = provider as { isTezosXRelayer?: boolean } | null | undefined;
+  return Boolean(maybe?.isTezosXRelayer) || rdns === TEZOS_X_RELAYER_RDNS;
+}
+
+function isRelayerWalletLocallyMarked(wallet: WalletState): boolean {
+  return readLocalFlag(relayerWalletStorageKey(RELAYER_WALLET_KEY_PREFIX, wallet.chainId, wallet.address));
+}
+
+function hasRelayerXtzAirdropFlag(wallet: WalletState): boolean {
+  return readLocalFlag(relayerWalletStorageKey(RELAYER_XTZ_AIRDROP_KEY_PREFIX, wallet.chainId, wallet.address));
+}
+
+function markRelayerWallet(address: string | null, chainIdLike: bigint | null) {
+  writeLocalFlag(relayerWalletStorageKey(RELAYER_WALLET_KEY_PREFIX, chainIdLike, address), true);
+}
+
+function markRelayerXtzAirdropped(address: string | null, chainIdLike: bigint | null) {
+  writeLocalFlag(relayerWalletStorageKey(RELAYER_XTZ_AIRDROP_KEY_PREFIX, chainIdLike, address), true);
+}
+
 /** When not eligible for airdrop (or airdrop skipped), warn if play is still impossible: stake in USDC + XTZ for gas. */
 function getInsufficientPlayFundsEventLogMessage(w: WalletState): string | null {
   if (!w.address || w.chainId !== CONFIG.chainId) return null;
   if (w.usdcBalanceRaw == null || w.xtzBalanceRaw == null) return null;
   const shortOnUsdc = w.usdcBalanceRaw < PRESS_AMOUNT_UNITS;
-  const shortOnXtz = w.xtzBalanceRaw === 0n;
+  const shortOnXtz = w.xtzBalanceRaw === 0n && !isRelayerWalletLocallyMarked(w);
   if (!shortOnUsdc && !shortOnXtz) return null;
   if (shortOnUsdc && shortOnXtz) {
     return `You don't have enough USDC or XTZ to play. You need at least ${CONFIG.pressAmount} USDC and a little XTZ for gas on this network.`;
@@ -947,6 +998,7 @@ function App() {
   const [depositFxId, setDepositFxId] = useState(0);
   /** `null` = discovery not run yet; length 0 = no provider */
   const [eip6963Wallets, setEip6963Wallets] = useState<Eip6963ProviderDetail[] | null>(null);
+  const selectedWalletRdnsRef = useRef<string | null>(null);
   const [walletPickerOpen, setWalletPickerOpen] = useState(false);
   const [connectWalletOptions, setConnectWalletOptions] = useState<Eip6963ProviderDetail[]>([]);
   /** Bumps so wallet listener effect re-binds to the selected EIP-1193 provider. */
@@ -1271,10 +1323,13 @@ function App() {
       if (!wallet.address || wallet.chainId !== CONFIG.chainId) {
         return { willAirdrop: false, needsUsdc: false, needsXtz: false };
       }
+      const relayerWallet = isRelayerWalletLocallyMarked(wallet);
       const needsUsdcAirdrop =
         wallet.usdcBalanceRaw == null || wallet.usdcBalanceRaw === 0n;
       const needsXtzAirdrop =
-        wallet.xtzBalanceRaw == null || wallet.xtzBalanceRaw === 0n;
+        relayerWallet
+          ? !hasRelayerXtzAirdropFlag(wallet)
+          : wallet.xtzBalanceRaw == null || wallet.xtzBalanceRaw === 0n;
       const willAirdrop = needsUsdcAirdrop || needsXtzAirdrop;
       if (!willAirdrop) {
         return { willAirdrop: false, needsUsdc: false, needsXtz: false };
@@ -1287,6 +1342,9 @@ function App() {
         xtz: needsXtzAirdrop,
         usdc: needsUsdcAirdrop,
       });
+      if (relayerWallet && needsXtzAirdrop) {
+        markRelayerXtzAirdropped(wallet.address, wallet.chainId);
+      }
       await refreshWalletState(false);
       pushEventLog(airdropDeliveredLogMessage(needsUsdcAirdrop, needsXtzAirdrop), "success");
       setAirdropModalState({
@@ -1400,6 +1458,7 @@ function App() {
       setEip6963Wallets(d);
       const saved = getSavedWalletRdns();
       if (saved) {
+        selectedWalletRdnsRef.current = saved;
         const m = findDetailBySavedRdns(d, saved);
         if (m) {
           setSelectedEvmProvider(m.provider as SelectedEthereumProvider);
@@ -1444,7 +1503,9 @@ function App() {
 
   function applySelectedProvider(detail: Eip6963ProviderDetail) {
     setSelectedEvmProvider(detail.provider as SelectedEthereumProvider);
-    saveWalletRdns(detail.info.rdns || detail.info.uuid);
+    const rdns = detail.info.rdns || detail.info.uuid;
+    selectedWalletRdnsRef.current = rdns;
+    saveWalletRdns(rdns);
     setEvmListenerKey((k) => k + 1);
   }
 
@@ -1495,6 +1556,10 @@ function App() {
       pushEventLog(msg, "error");
       setActionState({ kind: "error", message: msg });
       return;
+    }
+
+    if (isTezosRelayerProviderLike(getEvmProvider(), selectedWalletRdnsRef.current)) {
+      markRelayerWallet(connectedWallet.address, connectedWallet.chainId);
     }
 
     if (connectedWallet.chainId !== CONFIG.chainId) {
@@ -1631,6 +1696,9 @@ function App() {
     if (!w.address || w.chainId !== CONFIG.chainId) {
       return;
     }
+    if (isTezosRelayerProviderLike(getEvmProvider(), selectedWalletRdnsRef.current)) {
+      markRelayerWallet(w.address, w.chainId);
+    }
     pushEventLog(
       `${TEZOSX_EVM_TESTNET_NAME} is now selected in your wallet — checking balances for testnet funds…`,
       "info",
@@ -1686,6 +1754,7 @@ function App() {
     }
     isWalletDisconnectedRef.current = true;
     setSelectedEvmProvider(null);
+    selectedWalletRdnsRef.current = null;
     clearSavedWalletRdns();
     setEvmListenerKey((k) => k + 1);
     setWalletError(null);
