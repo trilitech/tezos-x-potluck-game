@@ -1,0 +1,7 @@
+{
+  "network": "tezosxTestnet",
+  "usdc": "0x257De96BE880EF01894304701C4aF4ef08FCbF9a",
+  "deployer": "0x6ce4d79d4E77402e1ef3417Fdda433aA744C6e1c",
+  "initialSupply": "1000000000000",
+  "deployedAt": "2026-04-28T12:36:48.347Z"
+}

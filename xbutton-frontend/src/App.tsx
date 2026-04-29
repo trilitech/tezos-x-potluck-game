@@ -286,10 +286,6 @@ function markRelayerXtzAirdropped(address: string | null, chainIdLike: bigint | 
   writeLocalFlag(relayerWalletStorageKey(RELAYER_XTZ_AIRDROP_KEY_PREFIX, chainIdLike, address), true);
 }
 
-function logDepositSyncDebug(stage: string, details: Record<string, unknown>) {
-  console.info(`[potzluck][deposit-sync] ${stage}`, details);
-}
-
 /** When not eligible for airdrop (or airdrop skipped), warn if play is still impossible: stake in USDC + XTZ for gas. */
 function getInsufficientPlayFundsEventLogMessage(w: WalletState): string | null {
   if (!w.address || w.chainId !== CONFIG.chainId) return null;
@@ -527,6 +523,18 @@ function isUserRejectedWalletError(error: unknown): boolean {
   return e.code === 4001 || e.code === "ACTION_REJECTED";
 }
 
+/** Rabby and some wallets throw when the dapp network is not in the wallet’s registry (e.g. `defaultChain` is null). */
+function isWalletNetworkSetupError(error: unknown): boolean {
+  const s = String(
+    error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null
+        ? JSON.stringify(error)
+        : error,
+  );
+  return s.includes("defaultChain") && s.includes("destructure");
+}
+
 /** Ethers BAD_DATA / empty `0x` when reading a contract - usually wrong chain or token not deployed there. */
 function isBadContractRpcResultError(error: unknown): boolean {
   const err = error as { code?: string; message?: string; shortMessage?: string };
@@ -684,8 +692,11 @@ async function fetchGameState(): Promise<GameState> {
 
   let lastPlayerTezos = tezosStr;
   if (!lastPlayerTezos && lastPlayerBytes) {
-    try { lastPlayerTezos = await tezosAddressFromBinary(lastPlayerBytes); }
-    catch (e) { console.warn("Could not decode last_player bytes:", e); }
+    try {
+      lastPlayerTezos = await tezosAddressFromBinary(lastPlayerBytes);
+    } catch {
+      /* non-fatal */
+    }
   }
 
   // EVM address comes directly from storage - no log scan or RPC needed.
@@ -723,230 +734,6 @@ async function fetchPayoutTxHash(
     /* RPC may reject wide log queries */
   }
   return null;
-}
-
-type EscrowDepositedRow = {
-  transactionHash: string | null;
-  blockNumber: number;
-  logIndex: number;
-  player: string | null;
-  amount: string | null;
-};
-
-const DEPOSITED_EVENT_TOPIC = ethers.id("Deposited(address,uint256)");
-
-/**
- * Inspect escrow `Deposited` logs near the deposit tx receipt. Uses the tx `to` address as the
- * escrow when present so we still detect events when `VITE_POT_ADDRESS` is stale vs the chain.
- */
-async function inspectDepositedLogsForTx(
-  ethProvider: ethers.Provider,
-  txHash: string,
-): Promise<{
-  rows: EscrowDepositedRow[];
-  receiptBlock: number | null;
-  receiptStatus: number | null;
-  receiptLogCount: number;
-  rawDepositedAtPotCount: number;
-  txContractTarget: string | null;
-  escrowAddressUsedForScan: string;
-  configPotMatchesTxTarget: boolean;
-  depositLogQueryFailed: boolean;
-}> {
-  let txContractTarget: string | null = null;
-  try {
-    const t = await ethProvider.getTransaction(txHash);
-    txContractTarget = t?.to?.toLowerCase() ?? null;
-  } catch {
-    /* ignore */
-  }
-  const configLower = CONFIG.potAddress.toLowerCase();
-  const escrowLower = txContractTarget ?? configLower;
-  const configPotMatchesTxTarget = !txContractTarget || txContractTarget === configLower;
-
-  const receipt = await ethProvider.getTransactionReceipt(txHash);
-  if (!receipt) {
-    return {
-      rows: [],
-      receiptBlock: null,
-      receiptStatus: null,
-      receiptLogCount: 0,
-      rawDepositedAtPotCount: 0,
-      txContractTarget,
-      escrowAddressUsedForScan: escrowLower,
-      configPotMatchesTxTarget,
-      depositLogQueryFailed: false,
-    };
-  }
-  const rawDepositedAtPotCount = receipt.logs.filter(
-    (l) => l.topics[0] === DEPOSITED_EVENT_TOPIC && l.address.toLowerCase() === escrowLower,
-  ).length;
-
-  let rows: EscrowDepositedRow[] = [];
-  let depositLogQueryFailed = false;
-  try {
-    const escrowAddr = ethers.getAddress(escrowLower);
-    const escrow = new ethers.Contract(escrowAddr, ESCROW_ABI, ethProvider);
-    const fromBlock = Math.max(0, receipt.blockNumber - 2);
-    const toBlock = receipt.blockNumber + 2;
-    const logs = await escrow.queryFilter(escrow.filters.Deposited(), fromBlock, toBlock);
-    rows = logs
-      .map((log): EscrowDepositedRow | null => {
-        const parsed = escrow.interface.parseLog(log);
-        if (!parsed) return null;
-        const player = parsed.args[0] as string;
-        const amount = parsed.args[1] as bigint;
-        return {
-          transactionHash: log.transactionHash ?? null,
-          blockNumber: log.blockNumber,
-          logIndex: log.index,
-          player: player ? ethers.getAddress(player) : null,
-          amount: amount != null ? amount.toString() : null,
-        };
-      })
-      .filter((row) => row !== null);
-  } catch {
-    depositLogQueryFailed = true;
-    /* queryFilter may fail (e.g. block range unavailable); raw receipt scan still ran above */
-  }
-
-  return {
-    rows,
-    receiptBlock: receipt.blockNumber,
-    receiptStatus: receipt.status ?? null,
-    receiptLogCount: receipt.logs.length,
-    rawDepositedAtPotCount,
-    txContractTarget,
-    escrowAddressUsedForScan: escrowLower,
-    configPotMatchesTxTarget,
-    depositLogQueryFailed,
-  };
-}
-
-async function fetchEscrowDepositsNearTx(
-  browserProvider: ethers.BrowserProvider,
-  txHash: string,
-): Promise<EscrowDepositedRow[]> {
-  type Inspect = Awaited<ReturnType<typeof inspectDepositedLogsForTx>>;
-  type RpcInspect = Inspect & { rpcError?: string };
-
-  const runInspect = async (ethProvider: ethers.Provider): Promise<RpcInspect> => {
-    try {
-      return await inspectDepositedLogsForTx(ethProvider, txHash);
-    } catch (error) {
-      return {
-        rows: [],
-        receiptBlock: null,
-        receiptStatus: null,
-        receiptLogCount: 0,
-        rawDepositedAtPotCount: 0,
-        txContractTarget: null,
-        escrowAddressUsedForScan: CONFIG.potAddress.toLowerCase(),
-        configPotMatchesTxTarget: true,
-        depositLogQueryFailed: false,
-        rpcError: collectErrorText(error),
-      };
-    }
-  };
-
-  const walletIn = await runInspect(browserProvider);
-  const publicProvider = new ethers.JsonRpcProvider(CONFIG.evmRpc);
-  const publicIn = await runInspect(publicProvider);
-
-  let txFromResolved: string | null = null;
-  try {
-    const t = await publicProvider.getTransaction(txHash);
-    txFromResolved = t?.from ?? null;
-  } catch {
-    /* ignore */
-  }
-
-  const potLower = CONFIG.potAddress.toLowerCase();
-  const txTo = publicIn.txContractTarget ?? walletIn.txContractTarget;
-  const escrowAddressUsedForScan = txTo ?? potLower;
-  const configPotMatchesTxTarget = !txTo || txTo === potLower;
-  const rows =
-    walletIn.rows.length > 0 ? walletIn.rows : publicIn.rows.length > 0 ? publicIn.rows : [];
-
-  const inferredEmitted =
-    rows.length > 0 || walletIn.rawDepositedAtPotCount > 0 || publicIn.rawDepositedAtPotCount > 0;
-
-  const getLogsFailedBoth =
-    (Boolean(walletIn.rpcError) || walletIn.depositLogQueryFailed) &&
-    (Boolean(publicIn.rpcError) || publicIn.depositLogQueryFailed) &&
-    walletIn.rows.length === 0 &&
-    publicIn.rows.length === 0;
-
-  logDepositSyncDebug("deposited-event-diagnostics", {
-    depositTxHash: txHash,
-    configPotAddress: CONFIG.potAddress,
-    txFrom: txFromResolved,
-    txTo,
-    escrowAddressUsedForScan,
-    txTargetsExpectedEscrow: txTo === potLower,
-    configPotMatchesTxTarget,
-    inferredDepositedEmitted: inferredEmitted,
-    depositedParsedRowCount: rows.length,
-    playersFromParsedEvents: rows.map((r) => r.player),
-    amountsFromParsedEvents: rows.map((r) => r.amount),
-    parseSource: walletIn.rows.length > 0 ? "wallet_rpc" : publicIn.rows.length > 0 ? "public_evm_rpc" : "none",
-    walletRpcInspect: {
-      rpcError: walletIn.rpcError ?? null,
-      depositLogQueryFailed: walletIn.depositLogQueryFailed,
-      receiptBlock: walletIn.receiptBlock,
-      receiptStatus: walletIn.receiptStatus,
-      receiptLogCount: walletIn.receiptLogCount,
-      rawDepositedAtPotCount: walletIn.rawDepositedAtPotCount,
-      parsedRowCount: walletIn.rows.length,
-    },
-    publicEvmRpcInspect: {
-      rpcError: publicIn.rpcError ?? null,
-      depositLogQueryFailed: publicIn.depositLogQueryFailed,
-      receiptBlock: publicIn.receiptBlock,
-      receiptStatus: publicIn.receiptStatus,
-      receiptLogCount: publicIn.receiptLogCount,
-      rawDepositedAtPotCount: publicIn.rawDepositedAtPotCount,
-      parsedRowCount: publicIn.rows.length,
-    },
-    publicEvmRpcUrlHost: (() => {
-      try {
-        return new URL(CONFIG.evmRpc).host;
-      } catch {
-        return null;
-      }
-    })(),
-    hint:
-      txTo && txTo !== potLower
-        ? "VITE_POT_ADDRESS does not match this tx target — update env or relayer POT_ADDRESS to the live escrow."
-        : getLogsFailedBoth
-          ? "eth_getLogs failed on wallet and public RPC (e.g. block range unavailable); check rawDepositedAtPotCount in inspect if receipt was fetched."
-          : null,
-  });
-
-  if (walletIn.rpcError) {
-    console.warn("[potzluck][deposit-sync] wallet RPC deposit log inspect failed:", walletIn.rpcError);
-  }
-  if (publicIn.rpcError && rows.length === 0) {
-    console.warn("[potzluck][deposit-sync] public EVM RPC deposit log inspect failed:", publicIn.rpcError);
-  }
-  if (txTo && txTo !== potLower) {
-    console.warn(
-      "[potzluck][deposit-sync] POT_ADDRESS mismatch: deposit tx targets",
-      txTo,
-      "but VITE_POT_ADDRESS is",
-      potLower,
-      "— relayer watches POT_ADDRESS; it will miss Deposited unless env matches.",
-    );
-  }
-  if (!inferredEmitted && (walletIn.receiptStatus === 1 || publicIn.receiptStatus === 1)) {
-    if (txTo === potLower || !txTo) {
-      console.warn(
-        "[potzluck][deposit-sync] receipt succeeded but no Deposited signal parsed — if eth_getLogs failed, decode receipt.logs manually on an archive RPC; otherwise check escrow ABI.",
-      );
-    }
-  }
-
-  return rows;
 }
 
 async function fetchRecentCompletedSessions(limit = 10): Promise<SessionHistoryEntry[]> {
@@ -1082,75 +869,6 @@ function collectErrorText(error: unknown): string {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
-}
-
-/**
- * Logs `tez_getEthereumTezosAddress` for the connected account via wallet RPC and via `VITE_EVM_RPC`.
- * Use to verify alias wallets: expect a tz1/tz2/tz3 string when mapping is implemented; mismatch with relayer logs
- * often means different JSON-RPC backends.
- */
-async function logTezGetEthereumTezosAddressProbe(
-  stage: string,
-  walletProvider: ethers.BrowserProvider,
-  evmAddress: string | null,
-) {
-  if (!evmAddress) {
-    logDepositSyncDebug("tez_getEthereumTezosAddress", { stage, skipped: true, reason: "no_evm_address" });
-    return;
-  }
-  let evm: string;
-  try {
-    evm = ethers.getAddress(evmAddress);
-  } catch {
-    logDepositSyncDebug("tez_getEthereumTezosAddress", { stage, evm: evmAddress, error: "invalid_evm_address" });
-    return;
-  }
-
-  const summarize = async (ethProvider: ethers.Provider) => {
-    try {
-      const raw = await (ethProvider as ethers.JsonRpcProvider).send("tez_getEthereumTezosAddress", [evm]);
-      if (typeof raw === "string") {
-        return {
-          tezos: raw,
-          rawType: "string" as const,
-          rpcError: null as string | null,
-        };
-      }
-      return {
-        tezos: null,
-        rawType: typeof raw,
-        rawValuePreview: JSON.stringify(raw)?.slice(0, 240),
-        rpcError: null as string | null,
-      };
-    } catch (error) {
-      return { tezos: null, rawType: null, rpcError: collectErrorText(error) };
-    }
-  };
-
-  const walletRpc = await summarize(walletProvider);
-  const publicRpc = await summarize(new ethers.JsonRpcProvider(CONFIG.evmRpc));
-  const implicit = (t: string | null | undefined) => Boolean(t && /^tz[123]/.test(t));
-
-  logDepositSyncDebug("tez_getEthereumTezosAddress", {
-    stage,
-    evm,
-    walletRpc: {
-      ...walletRpc,
-      looksLikeImplicitAccount: implicit(walletRpc.tezos ?? undefined),
-    },
-    publicEvmRpc: {
-      ...publicRpc,
-      looksLikeImplicitAccount: implicit(publicRpc.tezos ?? undefined),
-    },
-    walletVsPublicTezosMatch: walletRpc.tezos === publicRpc.tezos,
-    publicEvmRpcHost: (() => {
-      try {
-        return new URL(CONFIG.evmRpc).host;
-      } catch {
-        return null;
-      }
-    })(),
-  });
 }
 
 /** USDC deposit / approve flow - hides raw CALL_EXCEPTION + estimateGas noise. */
@@ -1831,6 +1549,12 @@ function App() {
         });
         return;
       }
+      if (isWalletNetworkSetupError(error)) {
+        pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
+        setActionState({ kind: "error", message: TEZOS_X_EVM_WALLET_HINT });
+        setNetworkInfoOpen(true);
+        return;
+      }
       const msg =
         error instanceof Error ? error.message : "Could not reach your wallet. Unlock it and try Connect again.";
       pushEventLog(msg, "error");
@@ -1944,8 +1668,11 @@ function App() {
     } catch (error) {
       if (error instanceof Error && (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))) {
         setActionState({ kind: "error", message: formatAirdropError(error) });
+      } else if (isWalletNetworkSetupError(error)) {
+        pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
+        setActionState({ kind: "error", message: TEZOS_X_EVM_WALLET_HINT });
+        setNetworkInfoOpen(true);
       } else {
-        console.error("[connect]", error);
         setActionState({
           kind: "error",
           message: error instanceof Error ? error.message : "Something went wrong while connecting.",
@@ -1965,8 +1692,11 @@ function App() {
       } catch (error) {
         if (error instanceof Error && (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))) {
           setActionState({ kind: "error", message: formatAirdropError(error) });
+        } else if (isWalletNetworkSetupError(error)) {
+          pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
+          setActionState({ kind: "error", message: TEZOS_X_EVM_WALLET_HINT });
+          setNetworkInfoOpen(true);
         } else {
-          console.error("[connect]", error);
           setActionState({
             kind: "error",
             message: error instanceof Error ? error.message : "Something went wrong while connecting.",
@@ -2117,11 +1847,9 @@ function App() {
     previousState: GameState,
     stepDefs: FlowStepDef[],
     depositTxHash: string,
-    provider: ethers.BrowserProvider,
   ) {
     const deadline = Date.now() + CONFIG.gameStateWaitTimeoutMs;
     const t0 = Date.now();
-    let attempts = 0;
 
     const updateGameSyncProgress = () => {
       const elapsed = Math.floor((Date.now() - t0) / 1000);
@@ -2138,78 +1866,23 @@ function App() {
     while (true) {
       const now = Date.now();
       if (now >= deadline) {
-        const escrowDeposits = await fetchEscrowDepositsNearTx(provider, depositTxHash);
-        logDepositSyncDebug("timeout-before-poll", {
-          depositTxHash,
-          attempts,
-          elapsedMs: Date.now() - t0,
-          escrowDeposits,
-          previousPotRaw: previousState.potRaw,
-          previousSessionEnd: previousState.sessionEnd,
-          previousClaimed: previousState.claimed,
-          previousLastPlayerAddress: previousState.lastPlayerAddress,
-          previousLastPlayerTezos: previousState.lastPlayerTezos,
-        });
         throw new Error("GAME_STATE_RELAYER_TIMEOUT");
       }
       const sleepMs = Math.min(CONFIG.pollIntervalMs, deadline - now);
       await sleep(sleepMs);
       updateGameSyncProgress();
-      attempts += 1;
       let nextState: GameState;
       try {
         nextState = await fetchGameState();
       } catch {
-        logDepositSyncDebug("storage-fetch-failed", {
-          depositTxHash,
-          attempts,
-          elapsedMs: Date.now() - t0,
-        });
         throw new Error("GAME_SERVICE_UNAVAILABLE");
       }
       setGameStateError(null);
-      logDepositSyncDebug("storage-poll", {
-        depositTxHash,
-        attempts,
-        elapsedMs: Date.now() - t0,
-        previousPotRaw: previousState.potRaw,
-        nextPotRaw: nextState.potRaw,
-        previousLastPlayerAddress: previousState.lastPlayerAddress,
-        nextLastPlayerAddress: nextState.lastPlayerAddress,
-        previousLastPlayerTezos: previousState.lastPlayerTezos,
-        nextLastPlayerTezos: nextState.lastPlayerTezos,
-        nextSessionEnd: nextState.sessionEnd,
-        nextClaimed: nextState.claimed,
-        nextPayoutCompleted: nextState.payoutCompleted,
-      });
 
       if (BigInt(nextState.potRaw) > BigInt(previousState.potRaw)) {
-        logDepositSyncDebug("storage-updated", {
-          depositTxHash,
-          attempts,
-          elapsedMs: Date.now() - t0,
-          previousPotRaw: previousState.potRaw,
-          nextPotRaw: nextState.potRaw,
-          nextLastPlayerAddress: nextState.lastPlayerAddress,
-          nextLastPlayerTezos: nextState.lastPlayerTezos,
-        });
         return nextState;
       }
       if (Date.now() >= deadline) {
-        const escrowDeposits = await fetchEscrowDepositsNearTx(provider, depositTxHash);
-        logDepositSyncDebug("timeout-after-poll", {
-          depositTxHash,
-          attempts,
-          elapsedMs: Date.now() - t0,
-          escrowDeposits,
-          previousPotRaw: previousState.potRaw,
-          nextPotRaw: nextState.potRaw,
-          nextLastPlayerAddress: nextState.lastPlayerAddress,
-          nextLastPlayerTezos: nextState.lastPlayerTezos,
-          nextSessionEnd: nextState.sessionEnd,
-          nextClaimed: nextState.claimed,
-          nextPayoutCompleted: nextState.payoutCompleted,
-        });
         throw new Error("GAME_STATE_RELAYER_TIMEOUT");
       }
     }
@@ -2350,28 +2023,9 @@ function App() {
         txHash: tx.hash,
       });
 
-      const txReceipt = await tx.wait();
-      logDepositSyncDebug("deposit-confirmed", {
-        depositTxHash: tx.hash,
-        blockNumber: txReceipt?.blockNumber ?? null,
-        status: txReceipt?.status ?? null,
-        from: tx.from ?? null,
-        to: tx.to ?? null,
-        walletAddress: latestWallet.address,
-        walletChainId: latestWallet.chainId?.toString() ?? null,
-        walletIsRelayer: isRelayerWalletLocallyMarked(latestWallet),
-        walletHasRelayerXtzAirdropFlag: hasRelayerXtzAirdropFlag(latestWallet),
-        walletXtzBalanceRaw: latestWallet.xtzBalanceRaw?.toString() ?? null,
-        walletUsdcBalanceRaw: latestWallet.usdcBalanceRaw?.toString() ?? null,
-      });
-      await logTezGetEthereumTezosAddressProbe("after_deposit_confirm", provider, latestWallet.address);
-      const escrowDeposits = await fetchEscrowDepositsNearTx(provider, tx.hash);
-      logDepositSyncDebug("escrow-deposit-events", {
-        depositTxHash: tx.hash,
-        escrowDeposits,
-      });
+      await tx.wait();
 
-      const updatedState = await waitForGameStateUpdate(currentState, depositSteps, tx.hash, provider);
+      const updatedState = await waitForGameStateUpdate(currentState, depositSteps, tx.hash);
       freezeGameStateUiRef.current = false;
       setGameState(updatedState);
       await refreshWalletState(false);
@@ -2499,7 +2153,6 @@ function App() {
         steps: completeFlowSteps(CLAIM_STEP_DEFS),
       });
     } catch (error) {
-      console.error("[claim] error:", error);
       const err = error as { code?: string; message?: string; shortMessage?: string };
       const isRevert =
         err?.code === "CALL_EXCEPTION" ||
@@ -3117,6 +2770,13 @@ function App() {
                 <NetworkHelpPotz onAdd={() => void switchNetwork()} />
               ) : null}
               <EventLogStrip entries={eventLog} evmTxUrl={evmTxUrl} />
+              {actionState.kind === "error" && actionState.message === TEZOS_X_EVM_WALLET_HINT ? (
+                <p className="net-help" style={{ marginTop: "0.75rem" }}>
+                  <button type="button" className="footer-link-btn" onClick={() => setNetworkInfoOpen(true)}>
+                    Network information
+                  </button>
+                </p>
+              ) : null}
             </div>
           </div>
 

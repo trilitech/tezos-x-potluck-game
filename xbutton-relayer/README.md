@@ -11,6 +11,12 @@ Node.js relayer for the Tezos X / CRAC XButton demo.
 
 Without the relayer, deposits do not update Tezos storage and winners are not paid.
 
+### “No logs in the relayer terminal”
+
+- By default the relayer only prints when it finds **`Deposited`** logs on **`POT_ADDRESS`**. If **`POT_ADDRESS`** (and the frontend **`VITE_POT_ADDRESS`**) point at an old escrow while users deposit to another contract, **`depositedLogsInBatch` stays 0** and you will see almost nothing after startup.
+- Set **`RELAYER_VERBOSE_POLL=1`** to print **`[relayer] poll tick`** every interval so you can confirm the process is running and scanning.
+- Production (e.g. Render) logs are on the host dashboard, not in your local terminal unless you run **`npm run dev`** locally with the same **`.env`**.
+
 ## Escrow & token
 
 Deploy from **`../contracts/evm`**: `xUSDC.sol`, then `xEscrow.sol` with `_authorizedCaller` = relayer EVM address. See **`../contracts/tezlink`** for the game contract.

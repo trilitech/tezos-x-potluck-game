@@ -23,6 +23,8 @@ const wallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, provider);
 
 const START_BLOCK_LOOKBACK = 20;
 const POLL_INTERVAL_MS = 5000;
+/** Set to 1/true to log every poll (proves the process is alive; use when debugging “no Deposited logs”). */
+const VERBOSE_POLL = /^1|true|yes$/i.test(String(process.env.RELAYER_VERBOSE_POLL ?? ''));
 
 const escrowAbi = [
   'event Deposited(address indexed player, uint256 amount)',
@@ -121,23 +123,17 @@ async function checkClaimAndPayout() {
     return;
   }
 
-  console.log('[relayer] Winner (EVM):', winner, '| EVM from storage:', lastPlayerEvm);
-  console.log('[relayer] Amount:', amount.toString());
-
   // Check if the escrow already emitted PaidOut for this winner (e.g. previous run, within last 999 blocks).
   const existingPayoutTx = await checkAlreadyPaidOut(winner);
   if (existingPayoutTx || payoutSent) {
-    console.log('[relayer] Payout already on-chain (tx:', existingPayoutTx ?? 'this run', '); skipping — calling mark_paid to sync Tezos.');
     await callMarkPaid();
     return;
   }
 
   try {
     const tx = await escrowWithWallet.payout(winner, amount);
-    console.log('[relayer] Payout tx:', tx.hash);
     await tx.wait();
     payoutSent = true;
-    console.log('[relayer] Winner paid!');
     await callMarkPaid();
   } catch (err) {
     const revertReason = decodeRevertReason(err);
@@ -145,7 +141,6 @@ async function checkClaimAndPayout() {
       // Escrow balance is zero — payout was already sent in a previous run.
       // Set payoutSent so we don't retry payout, then sync Tezos via mark_paid.
       payoutSent = true;
-      console.log('[relayer] Escrow balance is zero — payout was already sent. Calling mark_paid to sync Tezos.');
       await callMarkPaid();
     } else if (revertReason) {
       console.error('[relayer] Payout revert reason:', revertReason);
@@ -309,8 +304,31 @@ function michelineIntEncode(value) {
 /** Tezlink address from EVM wallet (same form as Tezos.get_sender for CRAC calls). */
 async function rpcEthereumToTezos(evmAddress) {
   const addr = ethers.getAddress(evmAddress);
-  const tez = await provider.send('tez_getEthereumTezosAddress', [addr]);
+  let tez;
+  try {
+    tez = await provider.send('tez_getEthereumTezosAddress', [addr]);
+  } catch (err) {
+    console.error('[relayer] tez_getEthereumTezosAddress RPC error', {
+      evm: addr,
+      message: err?.shortMessage ?? err?.message,
+      code: err?.code,
+      data: err?.data ?? err?.error?.data ?? err?.info?.error?.data,
+    });
+    throw err;
+  }
   if (typeof tez !== 'string') {
+    console.error('[relayer] tez_getEthereumTezosAddress unexpected result type', {
+      evm: addr,
+      typeofResult: typeof tez,
+      tez: tez,
+      jsonPreview: (() => {
+        try {
+          return JSON.stringify(tez)?.slice(0, 500);
+        } catch {
+          return null;
+        }
+      })(),
+    });
     throw new Error('tez_getEthereumTezosAddress: unexpected result');
   }
   return tez;
@@ -399,8 +417,6 @@ async function checkAlreadyPaidOut(winner) {
 }
 
 async function callMarkPaid() {
-  console.log('[relayer] Sending mark_paid with UNIT bytes:', UNIT_BYTES);
-
   try {
     const tx = await gateway.callMichelson(
       GAME_KT1,
@@ -409,9 +425,7 @@ async function callMarkPaid() {
       { gasLimit: CRAC_GAS_LIMIT }
     );
 
-    console.log('[relayer] mark_paid CRAC tx sent:', tx.hash);
-    const receipt = await tx.wait();
-    console.log('[relayer] mark_paid confirmed in block:', receipt.blockNumber);
+    await tx.wait();
   } catch (markPaidErr) {
     const reason = decodeRevertReason(markPaidErr);
     if (reason) {
@@ -437,8 +451,6 @@ async function processDeposited(log) {
   const parsed = escrow.interface.parseLog(log);
   const { player, amount } = parsed.args;
 
-  console.log('[relayer] Deposit', { player, amount: amount.toString(), tx: log.transactionHash });
-
   try {
     const tezosAddr = await rpcEthereumToTezos(player);
     const encodedBytes = encodeRecordDeposit(tezosAddr, player, amount);
@@ -449,8 +461,15 @@ async function processDeposited(log) {
       { gasLimit: CRAC_GAS_LIMIT }
     );
     await tx.wait();
-    console.log('[relayer] record_deposit ok', tx.hash);
   } catch (err) {
+    const msg = err?.shortMessage ?? err?.message ?? String(err);
+    if (msg.includes('tez_getEthereumTezosAddress') || msg.includes('tez_get')) {
+      console.error('[relayer] tez_getEthereumTezosAddress or Tezos mapping failed', {
+        player,
+        depositTxHash: log.transactionHash,
+        err: msg,
+      });
+    }
     const revertReason = decodeRevertReason(err);
     if (revertReason) {
       console.error('[relayer] record_deposit revert:', revertReason);
@@ -458,7 +477,6 @@ async function processDeposited(log) {
       console.error('[relayer] record_deposit failed:', err.shortMessage ?? err.message);
       const raw = err?.info?.error?.data ?? err?.data ?? err?.error?.data ?? null;
       if (raw) console.error('[relayer] record_deposit raw error data:', raw);
-      console.error('[relayer] record_deposit error info:', JSON.stringify(err?.info ?? err?.error ?? {}, null, 2));
     }
   }
 }
@@ -466,7 +484,6 @@ async function processDeposited(log) {
 async function pollDeposits() {
   const latestBlock = await provider.getBlockNumber();
   let fromBlock = Math.max(0, latestBlock - START_BLOCK_LOOKBACK);
-  console.log('[relayer] Deposited scan from block', fromBlock);
 
   const filter = escrow.filters.Deposited();
 
@@ -475,6 +492,14 @@ async function pollDeposits() {
       const currentBlock = await provider.getBlockNumber();
       if (currentBlock >= fromBlock) {
         const logs = await escrow.queryFilter(filter, fromBlock, currentBlock);
+        if (VERBOSE_POLL) {
+          console.log('[relayer] poll tick', {
+            fromBlock,
+            toBlock: currentBlock,
+            depositedLogsInBatch: logs.length,
+            watchingPot: POT_ADDRESS,
+          });
+        }
         for (const log of logs) {
           await processDeposited(log);
         }
@@ -491,11 +516,10 @@ async function pollDeposits() {
 }
 
 async function main() {
-  console.log('Relayer wallet:', wallet.address);
-  console.log('Watching escrow Deposited events at:', POT_ADDRESS);
-  console.log('Game KT1:', GAME_KT1);
-  console.log('Tezlink storage:', tezlinkStorageUrl);
-  console.log('Payout: will call escrow.payout(winner, amount) when claimed=true');
+  console.log(
+    '[relayer] started',
+    { wallet: wallet.address, pot: POT_ADDRESS, game: GAME_KT1, tezlinkStorage: tezlinkStorageUrl, verbosePoll: VERBOSE_POLL },
+  );
 
   await pollDeposits();
 }
@@ -520,7 +544,7 @@ if (renderPort) {
       res.end();
     })
     .listen(portNum, '0.0.0.0', () => {
-      console.log(`[relayer] Health HTTP on 0.0.0.0:${portNum} (/ and /health → 200)`);
+      console.log(`[relayer] health 0.0.0.0:${portNum}`);
     });
 }
 

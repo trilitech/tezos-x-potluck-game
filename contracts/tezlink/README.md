@@ -18,6 +18,7 @@ Michelson never calls these methods; they are for the relayer and tooling only. 
 | Folder    | Contents |
 |----------|----------|
 | **`ligo/`** | Contract source in CameLIGO (`xbutton.mligo`) and compiled Michelson (`xbutton.tz`). Compile contract and storage with Ligo, then originate with octez-client. Also **`counter-nac-tutorial.mligo`**: NAC tutorial counter — `ligo compile contract counter-nac-tutorial.mligo -m CounterNacTutorial > counter-nac-tutorial.tz`, then `octez-client originate` as in this README. |
+| **`smartpy/`** | Same contract in **SmartPy** (`xbutton.py`); use your SmartPy toolchain to compile. See `smartpy/README.md`. The canonical on-chain build in this repo is still the LIGO → Michelson path unless you standardize on SmartPy. |
 
 ## How it works
 
