@@ -518,6 +518,9 @@ const CLAIM_MISMATCH_LOG_PREFIX = "Only the last person who pressed can claim.";
 
 const CONNECT_WALLET_CHECKING_MSG = "Connecting your wallet and checking your Tezos X balances…";
 
+/** Shown while `wallet_switchEthereumChain` / add network is in progress. */
+const CONFIRM_APP_CHAIN_SWITCH_MSG = `Confirm switching to ${TEZOSX_EVM_TESTNET_NAME} in your wallet…`;
+
 function isUserRejectedWalletError(error: unknown): boolean {
   const e = error as { code?: number | string };
   return e.code === 4001 || e.code === "ACTION_REJECTED";
@@ -567,16 +570,22 @@ function isUnrecognizedChainError(error: unknown): boolean {
   return msg.includes("unrecognized") && msg.includes("chain");
 }
 
-/** Rabby and some wallets throw when the dapp network is not in the wallet’s registry (e.g. `defaultChain` is null). */
+/** Rabby: internal prefs missing `defaultChain` when the site chain isn’t in the wallet registry (see connect path). */
 function isWalletNetworkSetupError(error: unknown): boolean {
-  const s = String(
-    error instanceof Error
-      ? error.message
-      : typeof error === "object" && error !== null
-        ? JSON.stringify(error)
-        : error,
-  );
-  return s.includes("defaultChain") && s.includes("destructure");
+  if (isUserRejectedWalletError(error)) return false;
+  const e = error as { message?: string; data?: { originalError?: { message?: string } } };
+  const msg = `${e?.message ?? ""} ${e?.data?.originalError?.message ?? ""}`;
+  if (!msg) return false;
+  return msg.includes("Cannot destructure property") && msg.includes("defaultChain");
+}
+
+/**
+ * Read the wallet’s *current* chain from the injected provider. Prefer this over
+ * `provider.getNetwork()`: the latter can disagree with the extension (cached / registered networks).
+ */
+async function readChainIdFromProvider(provider: ethers.BrowserProvider): Promise<bigint> {
+  const hex = (await provider.send("eth_chainId", [])) as string;
+  return BigInt(hex);
 }
 
 /** Ethers BAD_DATA / empty `0x` when reading a contract - usually wrong chain or token not deployed there. */
@@ -1268,12 +1277,12 @@ function App() {
       }
 
       const address = ethers.getAddress(accounts[0]);
-      const network = await provider.getNetwork();
+      const currentChainId = await readChainIdFromProvider(provider);
 
-      if (network.chainId !== CONFIG.chainId) {
+      if (currentChainId !== CONFIG.chainId) {
         const nextState = {
           address,
-          chainId: network.chainId,
+          chainId: currentChainId,
           usdcBalance: null,
           usdcAllowance: null,
           usdcBalanceRaw: null,
@@ -1293,7 +1302,7 @@ function App() {
         ]);
         const nextState = {
           address,
-          chainId: network.chainId,
+          chainId: currentChainId,
           usdcBalance: formatTokenAmount(balance, CONFIG.usdcDecimals),
           usdcAllowance: allowance,
           usdcBalanceRaw: balance,
@@ -1312,7 +1321,7 @@ function App() {
         }
         const nextState = {
           address,
-          chainId: network.chainId,
+          chainId: currentChainId,
           usdcBalance: null,
           usdcAllowance: null,
           usdcBalanceRaw: null,
@@ -1614,7 +1623,7 @@ function App() {
       return;
     }
 
-    const connectedWallet = await refreshWalletState(false);
+    let connectedWallet = await refreshWalletState(false);
     if (!connectedWallet?.address) {
       const msg =
         "Could not read your wallet after it connected. Unlock your wallet, check that you are on a supported network, and try Connect again.";
@@ -1623,17 +1632,28 @@ function App() {
       return;
     }
 
-    if (isTezosRelayerProviderLike(getEvmProvider(), selectedWalletRdnsRef.current)) {
-      markRelayerWallet(connectedWallet.address, connectedWallet.chainId);
+    if (connectedWallet.chainId !== CONFIG.chainId) {
+      setActionState({
+        kind: "pending",
+        message: CONFIRM_APP_CHAIN_SWITCH_MSG,
+      });
+      const switched = await requestAppChainSwitch();
+      if (!switched) {
+        await refreshWalletState(false);
+        pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
+        setActionState({ kind: "error", message: TEZOS_X_EVM_WALLET_HINT });
+        return;
+      }
+      connectedWallet = await refreshWalletState(false);
+      if (!connectedWallet?.address || connectedWallet.chainId !== CONFIG.chainId) {
+        pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
+        setActionState({ kind: "error", message: TEZOS_X_EVM_WALLET_HINT });
+        return;
+      }
     }
 
-    if (connectedWallet.chainId !== CONFIG.chainId) {
-      pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
-      setActionState({
-        kind: "error",
-        message: TEZOS_X_EVM_WALLET_HINT,
-      });
-      return;
+    if (isTezosRelayerProviderLike(getEvmProvider(), selectedWalletRdnsRef.current)) {
+      markRelayerWallet(connectedWallet.address, connectedWallet.chainId);
     }
 
     const funded = await ensureTestnetFundsIfNeeded(connectedWallet);
@@ -1843,10 +1863,15 @@ function App() {
     });
   }
 
-  async function switchNetwork() {
+  /**
+   * `wallet_switchEthereumChain` to the app’s chain, or add+switch if the chain isn’t in the wallet.
+   * Does not show the wrong-network app message; callers decide what to do on `false` (e.g. reject, hint).
+   */
+  async function requestAppChainSwitch(): Promise<boolean> {
     const ethereum = getEvmProvider();
-    if (!ethereum) return;
-
+    if (!ethereum) {
+      return false;
+    }
     const addChainParam = {
       chainId: CONFIG.chainIdHex,
       chainName: TEZOSX_EVM_TESTNET_NAME,
@@ -1860,27 +1885,29 @@ function App() {
     } as const;
 
     try {
-      await ethereum.request?.({
+      await ethereum.request({
         method: "wallet_switchEthereumChain",
         params: [{ chainId: CONFIG.chainIdHex }],
       });
+      return true;
     } catch (error) {
       if (isUserRejectedWalletError(error)) {
-        return;
+        return false;
       }
       if (isUnrecognizedChainError(error)) {
         try {
-          await ethereum.request?.({
+          await ethereum.request({
             method: "wallet_addEthereumChain",
             params: [addChainParam],
           });
-          await ethereum.request?.({
+          await ethereum.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: CONFIG.chainIdHex }],
           });
+          return true;
         } catch (addOrSwitchErr) {
           if (isUserRejectedWalletError(addOrSwitchErr)) {
-            return;
+            return false;
           }
           const detail =
             addOrSwitchErr instanceof Error ? addOrSwitchErr.message : String(addOrSwitchErr);
@@ -1888,11 +1915,19 @@ function App() {
             `Could not add ${TEZOSX_EVM_TESTNET_NAME} in your wallet. In Rabby, ensure “Custom network” / testnets are enabled, add the RPC from Network information, then try again. ${detail}`,
             "error",
           );
-          return;
+          return false;
         }
-      } else {
-        throw error;
       }
+      const msg = error instanceof Error ? error.message : String(error);
+      pushEventLog(`Could not switch network: ${msg}`, "error");
+      return false;
+    }
+  }
+
+  async function switchNetwork() {
+    const ok = await requestAppChainSwitch();
+    if (!ok) {
+      return;
     }
 
     try {
@@ -1965,11 +2000,25 @@ function App() {
     }
 
     // Read balances/address from the wallet RPC, not from React state so we do not rely on a stale render.
-    const latestWallet = await refreshWalletState(false);
+    let latestWallet = await refreshWalletState(false);
     if (!latestWallet.address) {
       setActionState({ kind: "error", message: "Connect your wallet before pressing the button." });
       depositInFlightRef.current = false;
       return;
+    }
+
+    if (latestWallet.chainId !== CONFIG.chainId) {
+      setActionState({
+        kind: "pending",
+        message: CONFIRM_APP_CHAIN_SWITCH_MSG,
+      });
+      const switched = await requestAppChainSwitch();
+      if (!switched) {
+        setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_TESTNET_NAME} first.` });
+        depositInFlightRef.current = false;
+        return;
+      }
+      latestWallet = await refreshWalletState(false);
     }
 
     if (latestWallet.chainId !== CONFIG.chainId) {
@@ -2270,12 +2319,35 @@ function App() {
     try {
       const provider = new ethers.BrowserProvider(ethereum);
       const accounts = (await provider.send("eth_accounts", [])) as string[];
-      const network = await provider.getNetwork();
-      if (accounts.length === 0 || network.chainId !== CONFIG.chainId) {
+      if (accounts.length === 0) {
         setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_TESTNET_NAME}.` });
         return false;
       }
-      const signer = await provider.getSigner();
+      let currentChainId = await readChainIdFromProvider(provider);
+      if (currentChainId !== CONFIG.chainId) {
+        setActionState({
+          kind: "pending",
+          message: CONFIRM_APP_CHAIN_SWITCH_MSG,
+        });
+        const switched = await requestAppChainSwitch();
+        if (!switched) {
+          setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_TESTNET_NAME}.` });
+          return false;
+        }
+        const p2 = new ethers.BrowserProvider(ethereum);
+        currentChainId = await readChainIdFromProvider(p2);
+      }
+      if (currentChainId !== CONFIG.chainId) {
+        setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_TESTNET_NAME}.` });
+        return false;
+      }
+      setActionState({
+        kind: "pending",
+        message: "Confirm the new game session in your wallet to start a round on Tezlink.",
+        steps: markFlowSteps(START_SESSION_STEP_DEFS, "wallet_start"),
+      });
+      const sessionProvider = new ethers.BrowserProvider(ethereum);
+      const signer = await sessionProvider.getSigner();
       const gateway = new ethers.Contract(CONFIG.cracPrecompile, GATEWAY_ABI, signer);
       const durationBytes = encodeMichelineInt(DEFAULT_SESSION_DURATION_SEC);
       const tx = await gateway.callMichelson(
@@ -2833,13 +2905,6 @@ function App() {
                 <NetworkHelpPotz onAdd={() => void switchNetwork()} />
               ) : null}
               <EventLogStrip entries={eventLog} evmTxUrl={evmTxUrl} />
-              {actionState.kind === "error" && actionState.message === TEZOS_X_EVM_WALLET_HINT ? (
-                <p className="net-help" style={{ marginTop: "0.75rem" }}>
-                  <button type="button" className="footer-link-btn" onClick={() => setNetworkInfoOpen(true)}>
-                    Network information
-                  </button>
-                </p>
-              ) : null}
             </div>
           </div>
 
