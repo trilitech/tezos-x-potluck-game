@@ -104,10 +104,10 @@ Update **`tezlink/deployments/latest-xbutton.json`** in git with the new KT1, op
 
 | Variable | Value |
 |----------|--------|
-| `VITE_TEZOSX_NETWORK` | `testnet` or `previewnet` — default RPCs, chain id, explorers, tzkt API, and **which contract block** applies |
-| `VITE_PREVIEWNET_USDC_ADDRESS`, `VITE_PREVIEWNET_POT_ADDRESS`, `VITE_PREVIEWNET_GAME_CONTRACT` | **Required** for previewnet (or set legacy `VITE_USDC_ADDRESS` / `VITE_POT_ADDRESS` / `VITE_GAME_CONTRACT` instead) |
-| `VITE_TESTNET_USDC_ADDRESS`, `VITE_TESTNET_POT_ADDRESS`, `VITE_TESTNET_GAME_CONTRACT` | **Required** for testnet (or set the legacy `VITE_*` trio instead) |
-| `VITE_CRAC_PRECOMPILE` | **Required** unless the stack-specific `VITE_*_CRAC_PRECOMPILE` is set |
+| `VITE_TEZOSX_NETWORK` | `testnet` or `previewnet` — RPC/explorer presets; **previewnet** uses **built-in** Previewnet contract addresses in the app (optional `VITE_PREVIEWNET_*` overrides) |
+| `VITE_USDC_ADDRESS`, `VITE_POT_ADDRESS`, `VITE_GAME_CONTRACT` | **Testnet** only (optional; app has built-in testnet defaults) |
+| `VITE_PREVIEWNET_*` | Optional Previewnet overrides after redeploy |
+| `VITE_CRAC_PRECOMPILE` | Optional; default CRAC precompile if unset |
 | `VITE_EVM_RPC` | EVM RPC (must match how users’ wallets connect) |
 | `VITE_TEZLINK_RPC` | Michelson / Tezlink RPC base used for storage reads (Previewnet: `https://michelson.previewnet.tezosx.nomadic-labs.com` — no `/rpc/tezlink` suffix) |
 | `VITE_CHAIN_ID` | Same chain as `TEZOSX_CHAIN_ID` |
@@ -121,10 +121,10 @@ Update **`tezlink/deployments/latest-xbutton.json`** in git with the new KT1, op
 | `TEZOSX_NETWORK` | `testnet` or `previewnet` — default `EVM_RPC` / `TEZLINK_RPC` when those are unset |
 | `EVM_RPC` | Same EVM endpoint as the frontend’s `VITE_EVM_RPC` |
 | `TEZLINK_RPC` | Same Michelson / Tezlink endpoint used for the KT1 and storage |
-| `PREVIEWNET_POT_ADDRESS`, `PREVIEWNET_GAME_KT1` | **Required** for previewnet (or legacy `POT_ADDRESS` / `GAME_KT1`) |
-| `TESTNET_POT_ADDRESS`, `TESTNET_GAME_KT1` | **Required** for testnet (or legacy `POT_ADDRESS` / `GAME_KT1`) |
-| `POT_ADDRESS`, `GAME_KT1` | Optional legacy second choice |
-| `CRAC_PRECOMPILE` | **Required** unless `PREVIEWNET_CRAC_PRECOMPILE` / `TESTNET_CRAC_PRECOMPILE` supplies it |
+| `POT_ADDRESS`, `GAME_KT1` | **Testnet** only (optional; relayer has built-in testnet defaults) |
+| `PREVIEWNET_POT_ADDRESS`, `PREVIEWNET_GAME_KT1` | Optional Previewnet overrides (built-in Previewnet defaults if unset; **previewnet** ignores `POT_ADDRESS` / `GAME_KT1`) |
+| `TESTNET_POT_ADDRESS`, `TESTNET_GAME_KT1` | Optional second choice for testnet |
+| `CRAC_PRECOMPILE` | Optional; default CRAC precompile if unset |
 | `RELAYER_PRIVATE_KEY` | Same key as EVM `DEPLOYER_PRIVATE_KEY` if escrow `authorizedCaller` is the deployer |
 
 **Optional: keep `contracts/.env` in sync** (`USDC_ADDRESS`, `POT_ADDRESS`, `GAME_KT1`) so one-off `hardhat` runs stay consistent.

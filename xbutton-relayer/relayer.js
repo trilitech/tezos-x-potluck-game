@@ -27,6 +27,19 @@ const tezosXPresets = {
 };
 const tezosXPreset = tezosXPresets[tezosXStack];
 
+/** Built-in Previewnet pot/game; optional `PREVIEWNET_*` env overrides. Ignores `POT_ADDRESS` / `GAME_KT1` on previewnet so testnet values can stay in `.env`. */
+const HARDCODED_PREVIEWNET = {
+  pot: '0x92E791DF3Dd5A8704f0e7d9B3003A0627d95d017',
+  game: 'KT1Dj2B1Wmz3vqaBzHhEZpjAhXu7CrQBEiy1',
+};
+
+const HARDCODED_TESTNET = {
+  pot: '0x1B3d06699aBE347D3b835D0DA32591B4644730C0',
+  game: 'KT1JKKK8tgWSsfz9yVxmffSEVahvSzncvvKZ',
+};
+
+const DEFAULT_CRAC = '0xff00000000000000000000000000000000000007';
+
 function firstNonEmpty(...vals) {
   for (const v of vals) {
     const t = String(v ?? '').trim();
@@ -40,32 +53,20 @@ const TEZLINK_RPC = process.env.TEZLINK_RPC?.trim() || tezosXPreset.tezlinkRpc;
 const RELAYER_PRIVATE_KEY = process.env.RELAYER_PRIVATE_KEY;
 const POT_ADDRESS =
   tezosXStack === 'previewnet'
-    ? firstNonEmpty(process.env.PREVIEWNET_POT_ADDRESS, process.env.POT_ADDRESS)
-    : firstNonEmpty(process.env.TESTNET_POT_ADDRESS, process.env.POT_ADDRESS);
+    ? firstNonEmpty(process.env.PREVIEWNET_POT_ADDRESS) ?? HARDCODED_PREVIEWNET.pot
+    : firstNonEmpty(process.env.TESTNET_POT_ADDRESS, process.env.POT_ADDRESS) ?? HARDCODED_TESTNET.pot;
 const GAME_KT1 =
   tezosXStack === 'previewnet'
-    ? firstNonEmpty(process.env.PREVIEWNET_GAME_KT1, process.env.GAME_KT1)
-    : firstNonEmpty(process.env.TESTNET_GAME_KT1, process.env.GAME_KT1);
+    ? firstNonEmpty(process.env.PREVIEWNET_GAME_KT1) ?? HARDCODED_PREVIEWNET.game
+    : firstNonEmpty(process.env.TESTNET_GAME_KT1, process.env.GAME_KT1) ?? HARDCODED_TESTNET.game;
 const CRAC_PRECOMPILE =
   tezosXStack === 'previewnet'
-    ? firstNonEmpty(process.env.PREVIEWNET_CRAC_PRECOMPILE, process.env.CRAC_PRECOMPILE)
-    : firstNonEmpty(process.env.TESTNET_CRAC_PRECOMPILE, process.env.CRAC_PRECOMPILE);
+    ? firstNonEmpty(process.env.PREVIEWNET_CRAC_PRECOMPILE, process.env.CRAC_PRECOMPILE) ?? DEFAULT_CRAC
+    : firstNonEmpty(process.env.TESTNET_CRAC_PRECOMPILE, process.env.CRAC_PRECOMPILE) ?? DEFAULT_CRAC;
 
 if (!EVM_RPC || !RELAYER_PRIVATE_KEY || !TEZLINK_RPC) {
   throw new Error(
     'Missing required env vars (RELAYER_PRIVATE_KEY, and either TEZOSX_NETWORK or EVM_RPC + TEZLINK_RPC)',
-  );
-}
-if (!POT_ADDRESS || !GAME_KT1) {
-  const hint =
-    tezosXStack === 'previewnet'
-      ? 'Set PREVIEWNET_POT_ADDRESS and PREVIEWNET_GAME_KT1 (or legacy POT_ADDRESS / GAME_KT1).'
-      : 'Set TESTNET_POT_ADDRESS and TESTNET_GAME_KT1 (or legacy POT_ADDRESS / GAME_KT1).';
-  throw new Error(`Missing pot/game for TEZOSX_NETWORK=${tezosXStack}. ${hint}`);
-}
-if (!CRAC_PRECOMPILE) {
-  throw new Error(
-    'Missing CRAC precompile. Set CRAC_PRECOMPILE (or PREVIEWNET_CRAC_PRECOMPILE / TESTNET_CRAC_PRECOMPILE) in .env.',
   );
 }
 
