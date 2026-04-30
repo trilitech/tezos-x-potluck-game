@@ -25,7 +25,7 @@ function StepWhat() {
   return (
     <>
       <p className="tour-sub">
-        Tezos X lets your dApps run on <b>Etherlink</b> (EVM Interface) and <b>Tezlink</b> (Michelson Interface)
+        Tezos X lets your dApps run on <b>Etherlink</b> (EVM Interface) and the <b>Michelson-interface</b>
         seamlessly without your users having to switch network or context. This is achieved through <b>Native Atomic
         Composability</b>.
       </p>
@@ -41,7 +41,7 @@ function StepWhat() {
           <span className="bridge-line"></span>
         </div>
         <div className="runtime-card">
-          <div className="runtime-name"><span className="rt-dot tez"></span>Tezlink</div>
+          <div className="runtime-name"><span className="rt-dot tez"></span>Michelson-interface</div>
           <div className="runtime-sub">Michelson Interface</div>
           <div className="runtime-desc">Game logic, state, settlement.</div>
         </div>
@@ -55,7 +55,7 @@ function StepWhy() {
     <>
       <p className="tour-sub">
         Tezos X allows you to tap into liquidity and new user pools on EVM and Michelson without rewriting your dApp
-        for different networks. You&apos;ll benefit from ultra-low latency provided by Etherlink and Tezlink while
+        for different networks. You&apos;ll benefit from ultra-low latency provided by Etherlink and the Michelson-interface while
         still secured by Tezos L1
       </p>
     </>
@@ -67,7 +67,7 @@ function StepHow() {
     <>
       <p className="tour-sub">
         In this pay to play game, you&apos;ll deposit USDC tokens into an escrow contract on the EVM side, interact
-        with a game connected to an EVM contract, and this will instantly update the game state in Tezlink - where the
+        with a game connected to an EVM contract, and this will instantly update the game state on the Michelson-interface — where the
         game state is being stored.
       </p>
     </>
@@ -103,7 +103,7 @@ function StepOneness() {
   return (
     <>
       <p className="tour-sub">
-        Connect any of your wallets on the EVM interface of Tezos X and on the Tezlink interface of Tezos X and your
+        Connect any of your wallets on the EVM interface of Tezos X and on the Michelson-interface and your
         experience should be exactly the same. That&apos;s the power of Tezos X. Try it now in the game.
       </p>
     </>

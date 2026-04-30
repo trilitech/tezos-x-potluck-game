@@ -55,7 +55,7 @@ function Footer() {
         <a href="#" onClick={(e)=>e.preventDefault()}>Discord</a>
       </div>
       <div className="foot-right">
-        <a href="#" onClick={(e)=>e.preventDefault()}>Tezlink</a>
+        <a href="#" onClick={(e)=>e.preventDefault()}>Michelson-interface</a>
         <a href="#" onClick={(e)=>e.preventDefault()}>Docs</a>
         <a href="#" onClick={(e)=>e.preventDefault()}>Network information</a>
         <a href="#" onClick={(e)=>e.preventDefault()}>Faucet</a>

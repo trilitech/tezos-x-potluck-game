@@ -130,7 +130,7 @@ function App() {
       push('Claim requested · session ended');
       setTimeout(() => push('Relayer executing payout on EVM · <b>' + pot.toFixed(0) + ' USDC</b>'), 400);
       setTimeout(() => push('Payout successful · <b>' + pot.toFixed(0) + ' USDC</b> sent to your wallet'), 900);
-      setTimeout(() => push('Tezlink marked as paid'), 1300);
+      setTimeout(() => push('Michelson-interface marked as paid'), 1300);
       setTimeout(() => {
         setWallet(w => ({ ...w, usdc: w.usdc + pot }));
         setHasWon(false);
@@ -149,7 +149,7 @@ function App() {
       setPotState('depositing');
       push('1 USDC deposit detected on EVM interface');
       setTimeout(() => push('The relayer is now calling the NAC Gateway'), 500);
-      setTimeout(() => push('The Gateway is updating the game storage on Tezlink'), 1000);
+      setTimeout(() => push('The Gateway is updating the game storage on the Michelson-interface'), 1000);
       setTimeout(() => {
         setPot(p => p + STAKE);
         setWallet(w => ({ ...w, usdc: w.usdc - STAKE }));

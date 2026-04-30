@@ -1,89 +1,267 @@
 { parameter
-    (or (unit %mark_paid)
-        (or (unit %claim)
-            (or (pair %record_deposit address (pair bytes nat)) (int %start_session)))) ;
+    (or (nat %mark_paid)
+        (or (nat %claim)
+            (or (pair %record_deposit nat (pair address (pair bytes nat))) (int %start_session)))) ;
   storage
-    (pair (option %last_player address)
-          (pair (option %last_player_evm bytes)
-                (pair (nat %pot)
-                      (pair (timestamp %session_end)
-                            (pair (bool %claim_requested) (bool %payout_completed)))))) ;
-  code { UNPAIR ;
+    (pair (nat %current_session_id)
+          (pair (pair %current_session
+                   (option %last_player_tezos address)
+                   (pair (option %last_player_evm bytes)
+                         (pair (nat %pot) (pair (timestamp %session_end) (bool %claim_requested)))))
+                (pair (list %pending_session_ids nat)
+                      (map %pending_sessions
+                         nat
+                         (pair (address %winner_tezos)
+                               (pair (bytes %winner_evm)
+                                     (pair (nat %pot) (pair (timestamp %session_end) (bool %claim_requested))))))))) ;
+  code { LAMBDA
+           timestamp
+           (pair (option address) (pair (option bytes) (pair nat (pair timestamp bool))))
+           { PUSH bool False ; SWAP ; PUSH nat 0 ; NONE bytes ; NONE address ; PAIR 5 } ;
+         SWAP ;
+         UNPAIR ;
          IF_LEFT
-           { DROP ;
-             DUP ;
-             GET 9 ;
-             IF { DUP ;
-                  GET 10 ;
-                  IF { PUSH string "ALREADY_PAID" ; FAILWITH }
-                     { PUSH bool True ; UPDATE 10 ; NIL operation ; PAIR } }
-                { PUSH string "NO_CLAIM_REQUESTED" ; FAILWITH } }
-           { IF_LEFT
-               { DROP ;
-                 DUP ;
-                 GET 7 ;
-                 NOW ;
-                 COMPARE ;
-                 LT ;
-                 IF { PUSH string "SESSION_ACTIVE" ; FAILWITH }
-                    { DUP ;
-                      GET 9 ;
-                      IF { PUSH string "CLAIM_ALREADY_REQUESTED" ; FAILWITH }
-                         { PUSH nat 0 ;
-                           DUP 2 ;
+           { DUP 2 ;
+             CAR ;
+             DUP 2 ;
+             COMPARE ;
+             EQ ;
+             IF { DROP ;
+                  DUP ;
+                  GET 3 ;
+                  GET 8 ;
+                  IF { DUP ;
+                       GET 3 ;
+                       GET 7 ;
+                       DIG 2 ;
+                       SWAP ;
+                       EXEC ;
+                       UPDATE 3 ;
+                       NIL operation ;
+                       PAIR }
+                     { PUSH string "NO_CLAIM_REQUESTED" ; FAILWITH } }
+                { DIG 2 ;
+                  DROP ;
+                  DUP 2 ;
+                  GET 6 ;
+                  DUP 2 ;
+                  GET ;
+                  IF_NONE
+                    { PUSH string "UNKNOWN_SESSION" ; FAILWITH }
+                    { GET 8 ;
+                      IF { DUP 2 ;
+                           DUP 3 ;
                            GET 5 ;
-                           COMPARE ;
-                           EQ ;
-                           IF { PUSH string "EMPTY_POT" ; FAILWITH }
-                              { DUP ;
-                                CAR ;
-                                IF_NONE
-                                  { PUSH string "NO_LAST_PLAYER" ; FAILWITH }
-                                  { SENDER ;
-                                    COMPARE ;
-                                    NEQ ;
-                                    IF { PUSH string "NOT_LAST_PLAYER" ; FAILWITH }
-                                       { PUSH bool True ; UPDATE 9 ; NIL operation ; PAIR } } } } } }
-               { IF_LEFT
-                   { UNPAIR 3 ;
-                     DUP 4 ;
-                     GET 7 ;
-                     NOW ;
-                     COMPARE ;
-                     GT ;
-                     IF { PUSH string "SESSION_ENDED" ; FAILWITH }
-                        { DUP 4 ;
-                          GET 9 ;
-                          IF { PUSH string "CLAIM_ALREADY_REQUESTED" ; FAILWITH }
-                             { DUP 4 ;
+                           DUP 3 ;
+                           PAIR ;
+                           LAMBDA_REC
+                             (pair nat (list nat))
+                             (list nat)
+                             { UNPAIR ;
                                SWAP ;
-                               SOME ;
+                               IF_CONS
+                                 { DUP 3 ;
+                                   DUP 2 ;
+                                   COMPARE ;
+                                   EQ ;
+                                   IF { DROP ; SWAP ; PAIR ; EXEC }
+                                      { SWAP ; DIG 2 ; PAIR ; DIG 2 ; SWAP ; EXEC ; SWAP ; CONS } }
+                                 { DROP 2 ; NIL nat } } ;
+                           SWAP ;
+                           EXEC ;
+                           UPDATE 5 ;
+                           DIG 2 ;
+                           GET 6 ;
+                           NONE (pair address (pair bytes (pair nat (pair timestamp bool)))) ;
+                           DIG 3 ;
+                           UPDATE ;
+                           UPDATE 6 ;
+                           NIL operation ;
+                           PAIR }
+                         { PUSH string "NO_CLAIM_REQUESTED" ; FAILWITH } } } }
+           { IF_LEFT
+               { DIG 2 ;
+                 DROP ;
+                 DUP 2 ;
+                 CAR ;
+                 DUP 2 ;
+                 COMPARE ;
+                 EQ ;
+                 IF { DROP ;
+                      DUP ;
+                      GET 3 ;
+                      SENDER ;
+                      DUP 2 ;
+                      GET 7 ;
+                      NOW ;
+                      COMPARE ;
+                      LT ;
+                      IF { PUSH string "SESSION_ACTIVE" ; FAILWITH }
+                         { DUP 2 ;
+                           GET 8 ;
+                           IF { PUSH string "CLAIM_ALREADY_REQUESTED" ; FAILWITH }
+                              { PUSH nat 0 ;
+                                DUP 3 ;
+                                GET 5 ;
+                                COMPARE ;
+                                EQ ;
+                                IF { PUSH string "EMPTY_POT" ; FAILWITH }
+                                   { SWAP ;
+                                     CAR ;
+                                     IF_NONE
+                                       { PUSH string "NO_LAST_PLAYER" ; FAILWITH }
+                                       { COMPARE ; NEQ ; IF { PUSH string "NOT_LAST_PLAYER" ; FAILWITH } {} } } } } ;
+                      DUP ;
+                      GET 3 ;
+                      PUSH bool True ;
+                      UPDATE 8 ;
+                      UPDATE 3 ;
+                      NIL operation ;
+                      PAIR }
+                    { DUP 2 ;
+                      GET 6 ;
+                      DUP 2 ;
+                      GET ;
+                      IF_NONE
+                        { PUSH string "UNKNOWN_SESSION" ; FAILWITH }
+                        { DUP ;
+                          SENDER ;
+                          DUP 2 ;
+                          GET 7 ;
+                          NOW ;
+                          COMPARE ;
+                          LT ;
+                          IF { PUSH string "SESSION_ACTIVE" ; FAILWITH }
+                             { DUP 2 ;
+                               GET 8 ;
+                               IF { PUSH string "CLAIM_ALREADY_REQUESTED" ; FAILWITH }
+                                  { PUSH nat 0 ;
+                                    DUP 3 ;
+                                    GET 5 ;
+                                    COMPARE ;
+                                    EQ ;
+                                    IF { PUSH string "EMPTY_POT" ; FAILWITH }
+                                       { SWAP ;
+                                         CAR ;
+                                         COMPARE ;
+                                         NEQ ;
+                                         IF { PUSH string "NOT_LAST_PLAYER" ; FAILWITH } {} } } } ;
+                          DIG 2 ;
+                          DUP ;
+                          GET 6 ;
+                          DIG 2 ;
+                          PUSH bool True ;
+                          UPDATE 8 ;
+                          SOME ;
+                          DIG 3 ;
+                          UPDATE ;
+                          UPDATE 6 ;
+                          NIL operation ;
+                          PAIR } } }
+               { IF_LEFT
+                   { DIG 2 ;
+                     DROP ;
+                     UNPAIR 4 ;
+                     DUP 5 ;
+                     CAR ;
+                     COMPARE ;
+                     NEQ ;
+                     IF { PUSH string "SESSION_ID_MISMATCH" ; FAILWITH }
+                        { DUP 4 ;
+                          GET 3 ;
+                          GET 7 ;
+                          NOW ;
+                          COMPARE ;
+                          GT ;
+                          IF { PUSH string "SESSION_ENDED" ; FAILWITH }
+                             { DUP 4 ;
+                               GET 3 ;
+                               GET 8 ;
+                               IF { PUSH string "CLAIM_ALREADY_REQUESTED" ; FAILWITH }
+                                  { DUP 4 ;
+                                    GET 3 ;
+                                    SWAP ;
+                                    SOME ;
+                                    UPDATE 1 ;
+                                    SWAP ;
+                                    SOME ;
+                                    UPDATE 3 ;
+                                    SWAP ;
+                                    DUP 3 ;
+                                    GET 3 ;
+                                    GET 5 ;
+                                    ADD ;
+                                    UPDATE 5 ;
+                                    UPDATE 3 ;
+                                    NIL operation ;
+                                    PAIR } } } }
+                   { DUP ;
+                     LE ;
+                     IF { PUSH string "INVALID_DURATION" ; FAILWITH }
+                        { DUP 2 ;
+                          GET 3 ;
+                          GET 7 ;
+                          NOW ;
+                          COMPARE ;
+                          LT ;
+                          IF { PUSH string "SESSION_ACTIVE" ; FAILWITH }
+                             { PUSH nat 0 ;
+                               DUP 3 ;
+                               GET 3 ;
+                               GET 5 ;
+                               COMPARE ;
+                               EQ ;
+                               IF { SWAP }
+                                  { DUP 2 ;
+                                    GET 3 ;
+                                    CAR ;
+                                    IF_NONE
+                                      { PUSH string "INCONSISTENT_CURRENT_SESSION" ; FAILWITH }
+                                      { DUP 3 ;
+                                        GET 3 ;
+                                        GET 3 ;
+                                        IF_NONE
+                                          { PUSH string "INCONSISTENT_CURRENT_SESSION" ; FAILWITH }
+                                          { DUP 4 ;
+                                            DUP 5 ;
+                                            GET 5 ;
+                                            DUP 6 ;
+                                            CAR ;
+                                            CONS ;
+                                            UPDATE 5 ;
+                                            DUP 5 ;
+                                            GET 6 ;
+                                            DUP 6 ;
+                                            GET 3 ;
+                                            GET 8 ;
+                                            DUP 7 ;
+                                            GET 3 ;
+                                            GET 7 ;
+                                            DUP 8 ;
+                                            GET 3 ;
+                                            GET 5 ;
+                                            DIG 5 ;
+                                            DIG 6 ;
+                                            PAIR 5 ;
+                                            SOME ;
+                                            DIG 4 ;
+                                            CAR ;
+                                            UPDATE ;
+                                            UPDATE 6 } } } ;
+                               PUSH nat 1 ;
+                               DUP 2 ;
+                               CAR ;
+                               ADD ;
+                               DIG 2 ;
+                               NOW ;
+                               ADD ;
+                               DIG 3 ;
+                               SWAP ;
+                               EXEC ;
+                               DUG 2 ;
                                UPDATE 1 ;
                                SWAP ;
-                               SOME ;
                                UPDATE 3 ;
-                               SWAP ;
-                               DIG 2 ;
-                               GET 5 ;
-                               ADD ;
-                               UPDATE 5 ;
                                NIL operation ;
-                               PAIR } } }
-                   { SWAP ;
-                     NONE address ;
-                     UPDATE 1 ;
-                     NONE bytes ;
-                     UPDATE 3 ;
-                     PUSH nat 0 ;
-                     UPDATE 5 ;
-                     SWAP ;
-                     NOW ;
-                     ADD ;
-                     UPDATE 7 ;
-                     PUSH bool False ;
-                     UPDATE 9 ;
-                     PUSH bool False ;
-                     UPDATE 10 ;
-                     NIL operation ;
-                     PAIR } } } } }
+                               PAIR } } } } } } }
 

@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, type AnimationEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type AnimationEvent, type ReactNode } from "react";
 import { TEZOSX_EVM_TESTNET_NAME } from "./tezosxNetwork";
 
 export function shortAddr(addr: string | null): string {
@@ -6,7 +6,7 @@ export function shortAddr(addr: string | null): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-/** Small gold “lucky pot” for the topbar / brand mark. */
+/** Small gold pot icon for the Pot(z)Luck topbar / brand mark. */
 export function PotzLuckPotIcon() {
   const gid = useId().replace(/:/g, "");
   return (
@@ -57,8 +57,11 @@ export type EventLogEntry = {
   tone: EventLogTone;
   /** EVM (Blockscout) transaction hash — links phrases like “deposit transaction”. */
   txHash?: string;
-  /** Tezlink / tzkt page for Michelson-side activity (operations list or a specific op hash). */
+  /** Michelson-interface / tzkt page for Michelson-side activity (operations list or a specific op hash). */
   tezosOpsUrl?: string;
+  /** Extra explorer link (e.g. escrow contract address on Blockscout). */
+  relatedUrl?: string;
+  relatedLabel?: string;
 };
 
 export function createEventLogEntryId(): string {
@@ -70,11 +73,17 @@ export function createEventLogEntryId(): string {
 
 /** Longer phrases first so we do not link the wrong substring (e.g. "deposit" inside "deposited", "claim" inside "claimed"). */
 const TX_LINK_PHRASES = [
+  "game transaction",
   "session transaction",
   "deposit transaction",
   "approval transaction",
   "claim transaction",
+  "escrow payout transaction",
   "payout transaction",
+  /** Payout success lines: prefer linking the full phrase to the EVM payout tx. */
+  "payout confirmed.",
+  /** Payout success / claim lines: link "confirmed." to the EVM payout tx. */
+  "confirmed.",
   "payout complete",
   "claim submitted",
   "session",
@@ -83,7 +92,10 @@ const TX_LINK_PHRASES = [
   "approval",
 ] as const;
 
-const MICHELSON_STORAGE_PHRASE = "Michelson-interface storage";
+const TEZOS_EXPLORER_PHRASES = [
+  "Michelson-interface storage",
+  "game pot",
+] as const;
 
 function messageWithExplorerTxInner(
   msg: string,
@@ -118,25 +130,35 @@ function messageWithExplorerTxInner(
   );
 }
 
-/** EVM explorer links on phrases in `TX_LINK_PHRASES`; optional Tezlink/tzkt link on “Michelson-interface storage”. */
+/** Matches current (`Game #N: Payout confirmed.…`) and legacy (`Game pot payout confirmed.…`) payout lines. */
+export function isPayoutSuccessLogMessage(msg: string): boolean {
+  return (
+    /^Game #\d+: Payout confirmed\./.test(msg) || msg.startsWith("Game pot payout confirmed.")
+  );
+}
+
+/** EVM explorer links on phrases in `TX_LINK_PHRASES`; optional Michelson-interface/tzkt link on Tezos-side phrases. */
 export function messageWithExplorerTx(
   msg: string,
   txHash: string | undefined,
   evmTxUrl: (hash: string) => string,
   tezosOpsUrl?: string,
 ): ReactNode {
+  if (txHash && isPayoutSuccessLogMessage(msg)) {
+    return messageWithExplorerTxInner(msg, txHash, evmTxUrl);
+  }
   if (tezosOpsUrl && msg) {
-    const ti = msg.toLowerCase().indexOf(MICHELSON_STORAGE_PHRASE.toLowerCase());
-    if (ti >= 0) {
-      const afterMichelson = msg.slice(ti + MICHELSON_STORAGE_PHRASE.length);
+    for (const phrase of TEZOS_EXPLORER_PHRASES) {
+      const ti = msg.toLowerCase().indexOf(phrase.toLowerCase());
+      if (ti < 0) continue;
+      const afterLinked = msg.slice(ti + phrase.length);
       return (
         <>
           {messageWithExplorerTxInner(msg.slice(0, ti), txHash, evmTxUrl)}
           <a href={tezosOpsUrl} target="_blank" rel="noopener noreferrer" className="explorer-link">
-            {msg.slice(ti, ti + MICHELSON_STORAGE_PHRASE.length)}
+            {msg.slice(ti, ti + phrase.length)}
           </a>
-          {/* EVM tx is already linked in the leading segment (e.g. “deposit”); avoid trailing “View on explorer” on suffix text. */}
-          {messageWithExplorerTxInner(afterMichelson, undefined, evmTxUrl)}
+          {messageWithExplorerTxInner(afterLinked, undefined, evmTxUrl)}
         </>
       );
     }
@@ -198,6 +220,57 @@ export function DepositPotCelebration({ onComplete }: { onComplete: () => void }
         </svg>
         <div className="deposit-pot-fx__coin" />
       </div>
+    </div>
+  );
+}
+
+/** Info control beside “Recent games”: explains winner-only claims (hover title + click popover for touch). */
+export function RecentSessionsClaimInfo({ walletConnected }: { walletConnected: boolean }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const hoverTitle = walletConnected
+    ? "Only the wallet that won the game (shown as Winner) can claim that game’s USDC."
+    : "Connect your wallet on Tezos X. Only the winning wallet can claim a game.";
+
+  const body = walletConnected
+    ? "Only the wallet listed as Winner for a game can claim that game. If you did not win, you will not see the claim button."
+    : "Connect your EVM wallet on Tezos X first. Claim appears only when your address matches the game winner.";
+
+  return (
+    <div className="recent-sessions-info-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className="recent-sessions-info-btn"
+        aria-label="How claiming works"
+        title={hoverTitle}
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <svg className="recent-sessions-info-icon" viewBox="0 0 24 24" aria-hidden>
+          {/* Material-style “info” in circle: filled ring + i-bar + dot — reads clearly at 16px. */}
+          <path
+            fill="currentColor"
+            d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"
+          />
+        </svg>
+      </button>
+      {open ? (
+        <div className="recent-sessions-info-popover" role="tooltip">
+          {body}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -290,7 +363,22 @@ export function EventLogStrip(props: { entries: EventLogEntry[]; evmTxUrl: (hash
           return (
             <div key={e.id} className={`el-line ${cls} el-${e.tone}`}>
               <span className="el-tag">[EVENT LOG]</span>
-              <span className="el-msg">{messageWithExplorerTx(e.msg, e.txHash, props.evmTxUrl, e.tezosOpsUrl)}</span>
+              <span className="el-msg">
+                {messageWithExplorerTx(e.msg, e.txHash, props.evmTxUrl, e.tezosOpsUrl)}
+                {e.relatedUrl ? (
+                  <>
+                    {" "}
+                    <a
+                      href={e.relatedUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="explorer-link"
+                    >
+                      {e.relatedLabel ?? "Escrow contract ↗"}
+                    </a>
+                  </>
+                ) : null}
+              </span>
             </div>
           );
         })
@@ -318,7 +406,7 @@ export function PotFooter(props: {
       </div>
       <div className="foot-right">
         <a href={tezlinkUrl} target="_blank" rel="noopener noreferrer">
-          Tezlink
+          Michelson-interface
         </a>
         <a href={docsUrl} target="_blank" rel="noopener noreferrer">
           Docs

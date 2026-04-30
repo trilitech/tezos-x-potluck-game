@@ -1,4 +1,4 @@
-/* PotzLuck — production styling
+/* Pot(z)Luck — production styling
    Dark, builder-focused. Inter (UI) + JetBrains Mono (logs/data). White/green accents.
 */
 :root {
@@ -140,7 +140,7 @@ body {
   gap: 1px;
 }
 .brand-name { font-weight: 600; letter-spacing: -0.02em; font-size: 15px; line-height: 1; }
-/* Last two letters of “Potz” — lucky gold emphasis */
+/* “(z)” in Pot(z)Luck — lucky gold emphasis */
 .brand-name-tz {
   background: linear-gradient(135deg, #fff2b0, #e8c048 45%, #b8860b);
   -webkit-background-clip: text;
@@ -406,12 +406,60 @@ body {
   flex-direction: column;
   gap: 10px;
 }
+.session-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .session-history-h {
   font-size: 12px;
   color: var(--fg-3);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   font-weight: 500;
+  margin: 0;
+}
+.recent-sessions-info-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.recent-sessions-info-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.recent-sessions-info-btn:hover {
+  color: var(--fg-1);
+  border-color: rgba(179, 159, 251, 0.35);
+}
+.recent-sessions-info-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+.recent-sessions-info-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  width: min(260px, 70vw);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-1);
+  background: rgba(18, 18, 22, 0.98);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 }
 .session-history-link {
   appearance: none;
@@ -457,6 +505,36 @@ body {
 }
 .session-history-bottom {
   color: var(--fg-3);
+}
+.session-winner-block,
+.sessions-list-mid {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.session-winner-label {
+  color: var(--fg-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.session-winner-value {
+  color: var(--fg-1);
+  font-variant-numeric: tabular-nums;
+}
+.session-history-status {
+  color: var(--fg-2);
+}
+.sessions-list-status {
+  font-size: 12px;
+  color: var(--fg-2);
+  text-align: right;
+}
+
+.session-history-claim {
+  min-width: 84px;
+  justify-content: center;
 }
 .session-history-bottom a {
   color: var(--fg-1);
@@ -749,6 +827,22 @@ body {
   overflow-y: auto;
   padding-right: 4px;
   width: min(640px, 100%);
+  /* Subtle scrollbar — matches dark log panel instead of system default */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+.event-log-strip::-webkit-scrollbar {
+  width: 5px;
+}
+.event-log-strip::-webkit-scrollbar-track {
+  background: transparent;
+}
+.event-log-strip::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+}
+.event-log-strip::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
 }
 .el-empty { color: var(--fg-4); text-align: center; }
 .el-line {

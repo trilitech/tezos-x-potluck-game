@@ -25,6 +25,8 @@ const START_BLOCK_LOOKBACK = 20;
 const POLL_INTERVAL_MS = 5000;
 /** Set to 1/true to log every poll (proves the process is alive; use when debugging “no Deposited logs”). */
 const VERBOSE_POLL = /^1|true|yes$/i.test(String(process.env.RELAYER_VERBOSE_POLL ?? ''));
+/** Log claim/payout scan details (storage snapshot, payout attempts, errors). */
+const VERBOSE_CLAIM = /^1|true|yes$/i.test(String(process.env.RELAYER_VERBOSE_CLAIM ?? ''));
 
 const escrowAbi = [
   'event Deposited(address indexed player, uint256 amount)',
@@ -40,14 +42,9 @@ const escrowWithWallet = new ethers.Contract(POT_ADDRESS, escrowAbi, wallet);
 const gateway = new ethers.Contract(CRAC_PRECOMPILE, gatewayAbi, wallet);
 
 const processed = new Set();
-let payoutSent = false;
 
 // Gas limit for CRAC callMichelson — set above observed worst-case (record_deposit: ~2.05M).
 const CRAC_GAS_LIMIT = 3_000_000n;
-
-// Unit parameter for mark_paid entrypoint (takes unit in Ligo).
-// Raw Micheline (no PACK prefix) — matches how the frontend sends unit for claim: 03=prim, 0b=D_Unit.
-const UNIT_BYTES = '0x030b';
 
 // ---------------------------------------------------------------------------
 // Tezlink storage fetch and parse
@@ -61,40 +58,189 @@ async function fetchStorage() {
   return response.json();
 }
 
+/**
+ * Michelson list in JSON is often Cons/Nil; some stacks also return a JSON array of { int: "…" }.
+ */
+function parsePendingSessionIds(pendingSessionIdsNode) {
+  const ids = [];
+  if (!pendingSessionIdsNode) return ids;
+  if (Array.isArray(pendingSessionIdsNode)) {
+    for (const el of pendingSessionIdsNode) {
+      if (el?.int != null) ids.push(String(el.int));
+    }
+    if (ids.length > 0) return ids;
+  }
+  let cursor = pendingSessionIdsNode;
+  while (cursor?.prim === 'Cons') {
+    const idValue = cursor.args?.[0]?.int;
+    if (idValue != null) ids.push(String(idValue));
+    cursor = cursor.args?.[1];
+  }
+  return ids;
+}
+
+/** Next pending session id that has claim_requested=true: list order first (newest-first on-chain), else map keys desc. */
+function nextPendingClaimableSessionId(parsed) {
+  const { pendingSessionIds, pendingSessions } = parsed;
+  for (const id of pendingSessionIds) {
+    if (pendingSessions.get(id)?.claimRequested) return id;
+  }
+  const sorted = [...pendingSessions.keys()].sort((a, b) => {
+    const d = BigInt(b) - BigInt(a);
+    if (d > 0n) return 1;
+    if (d < 0n) return -1;
+    return 0;
+  });
+  for (const id of sorted) {
+    if (pendingSessions.get(id)?.claimRequested) return id;
+  }
+  return null;
+}
+
 function parseStorage(storage) {
-  // New storage layout:
-  // pair (option %last_player address)
-  //      (pair (option %last_player_evm bytes)
-  //            (pair (nat %pot)
-  //                  (pair (timestamp %session_end)
-  //                        (pair (bool %claim_requested) (bool %payout_completed)))))
-  const lastPlayerNode = storage?.args?.[0];
-  let lastPlayerTezos = null;
-  const prim = lastPlayerNode?.prim?.toLowerCase?.();
-  if (prim === 'some') {
-    const arg = lastPlayerNode.args?.[0];
-    if (arg?.string) lastPlayerTezos = arg.string;
-    else if (arg?.bytes) lastPlayerTezos = tezosAddressFromBinary(arg.bytes);
+  // pair current_session_id
+  //      (pair current_session
+  //            (pair pending_session_ids pending_sessions))
+  const currentSessionId = storage?.args?.[0]?.int ?? null;
+  const currentSessionNode = storage?.args?.[1]?.args?.[0];
+  const pendingSessionIdsNode = storage?.args?.[1]?.args?.[1]?.args?.[0];
+  const pendingSessionsNode = storage?.args?.[1]?.args?.[1]?.args?.[1];
+
+  const currentLastPlayerNode = currentSessionNode?.args?.[0];
+  const currentLastPlayerEvmNode = currentSessionNode?.args?.[1]?.args?.[0];
+  const currentPot = currentSessionNode?.args?.[1]?.args?.[1]?.args?.[0]?.int ?? null;
+  const currentSessionEnd = currentSessionNode?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[0]?.int ?? null;
+  const currentClaimRequested =
+    currentSessionNode?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[1]?.prim === 'True';
+
+  let currentLastPlayerTezos = null;
+  if (currentLastPlayerNode?.prim?.toLowerCase?.() === 'some') {
+    const arg = currentLastPlayerNode.args?.[0];
+    if (arg?.string) currentLastPlayerTezos = arg.string;
+    else if (arg?.bytes) currentLastPlayerTezos = tezosAddressFromBinary(arg.bytes);
   }
 
-  // last_player_evm: option bytes — raw 20-byte EVM address stored by the relayer
-  const lastPlayerEvmNode = storage?.args?.[1]?.args?.[0];
-  let lastPlayerEvm = null;
-  if (lastPlayerEvmNode?.prim?.toLowerCase() === 'some') {
-    const evmBytes = lastPlayerEvmNode?.args?.[0]?.bytes;
-    if (evmBytes) lastPlayerEvm = '0x' + evmBytes;
+  let currentLastPlayerEvm = null;
+  if (currentLastPlayerEvmNode?.prim?.toLowerCase?.() === 'some') {
+    const evmBytes = currentLastPlayerEvmNode?.args?.[0]?.bytes;
+    if (evmBytes) currentLastPlayerEvm = '0x' + evmBytes;
   }
 
-  const pot = storage?.args?.[1]?.args?.[1]?.args?.[0]?.int;
-  const claimedPrim = storage?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[0]?.prim;
-  const payoutCompletedPrim = storage?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[1]?.prim;
+  const pendingSessionIds = parsePendingSessionIds(pendingSessionIdsNode);
+
+  // Tezlink/RPC JSON encodes (big)maps as a top-level array of Elt/Pair nodes — same as xbutton-frontend parseGameStorage.
+  // Using only .args here leaves entries empty, so pending claims never pay out.
+  const pendingSessions = new Map();
+  let mapEntries = [];
+  if (Array.isArray(pendingSessionsNode)) {
+    mapEntries = pendingSessionsNode;
+  } else if (Array.isArray(pendingSessionsNode?.args)) {
+    mapEntries = pendingSessionsNode.args;
+  }
+  for (const entry of mapEntries) {
+    const sessionId = entry?.args?.[0]?.int;
+    const sessionValue = entry?.args?.[1];
+    const winnerTezos = sessionValue?.args?.[0]?.string ?? null;
+    const winnerEvmBytes = sessionValue?.args?.[1]?.args?.[0]?.bytes ?? null;
+    const pot = sessionValue?.args?.[1]?.args?.[1]?.args?.[0]?.int ?? null;
+    const sessionEnd = sessionValue?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[0]?.int ?? null;
+    const claimRequested = sessionValue?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[1]?.prim === 'True';
+
+    if (sessionId != null) {
+      pendingSessions.set(String(sessionId), {
+        winnerTezos,
+        winnerEvm: winnerEvmBytes ? `0x${winnerEvmBytes}` : null,
+        pot,
+        sessionEnd,
+        claimRequested,
+      });
+    }
+  }
+
   return {
-    lastPlayerTezos,
-    lastPlayerEvm,
-    pot: pot ?? null,
-    claimed: claimedPrim === 'True',
-    payoutCompleted: payoutCompletedPrim === 'True',
+    currentSessionId,
+    currentSession: {
+      lastPlayerTezos: currentLastPlayerTezos,
+      lastPlayerEvm: currentLastPlayerEvm,
+      pot: currentPot,
+      sessionEnd: currentSessionEnd,
+      claimRequested: currentClaimRequested,
+    },
+    pendingSessionIds,
+    pendingSessions,
   };
+}
+
+/**
+ * Pay USDC from escrow to winner_evm and call mark_paid(sessionId) on Tezlink.
+ * Handles both archived pending sessions and the live round (current_session_id) after claim.
+ */
+async function tryPayoutAndMarkPaid(sessionId, winnerEvm, potNatStr) {
+  if (!sessionId || !winnerEvm || !potNatStr) {
+    console.error('[relayer] tryPayoutAndMarkPaid: missing sessionId, winnerEvm, or pot', {
+      sessionId,
+      winnerEvm,
+      potNatStr,
+    });
+    return;
+  }
+
+  const amount = BigInt(potNatStr);
+  if (amount <= 0n) {
+    console.error('[relayer] tryPayoutAndMarkPaid: non-positive pot', { sessionId, potNatStr });
+    return;
+  }
+
+  const winner = resolveWinnerEvm(winnerEvm);
+  if (!winner) {
+    console.error('[relayer] Could not parse winner EVM address from storage:', winnerEvm);
+    return;
+  }
+
+  console.log('[relayer] payout attempt', {
+    sessionId: String(sessionId),
+    winner,
+    amountNat: potNatStr,
+    escrow: POT_ADDRESS,
+    relayerWallet: wallet.address,
+  });
+
+  const existingPayoutTx = await checkAlreadyPaidOut(winner, amount);
+  if (existingPayoutTx) {
+    console.log('[relayer] PaidOut already seen for this winner+amount window; syncing mark_paid only', {
+      sessionId: String(sessionId),
+      winner,
+      tx: existingPayoutTx,
+    });
+    await callMarkPaid(sessionId);
+    return;
+  }
+
+  try {
+    const tx = await escrowWithWallet.payout(winner, amount);
+    console.log('[relayer] payout tx submitted', { hash: tx.hash, sessionId: String(sessionId), winner });
+    await tx.wait();
+    console.log('[relayer] payout confirmed', { hash: tx.hash, sessionId: String(sessionId) });
+    await callMarkPaid(sessionId);
+  } catch (err) {
+    const revertReason = decodeRevertReason(err);
+    console.error('[relayer] payout error', {
+      sessionId: String(sessionId),
+      winner,
+      amountNat: potNatStr,
+      revertReason,
+      message: err.shortMessage ?? err.message,
+    });
+    if (revertReason && revertReason.toLowerCase().includes('balance too low')) {
+      await callMarkPaid(sessionId);
+    } else if (revertReason) {
+      console.error('[relayer] Payout revert reason:', revertReason);
+    } else {
+      const raw = err?.info?.error?.data ?? err?.data ?? err?.error?.data ?? null;
+      if (raw) console.error('[relayer] Payout raw error data:', raw);
+      console.error('[relayer] Payout failed:', err.shortMessage ?? err.message);
+    }
+  }
 }
 
 async function checkClaimAndPayout() {
@@ -106,47 +252,83 @@ async function checkClaimAndPayout() {
     return;
   }
 
-  const { lastPlayerEvm, pot, claimed, payoutCompleted } = parseStorage(storage);
+  const nowSec = Math.floor(Date.now() / 1000);
 
-  if (!claimed) return;
-  if (payoutCompleted) return;
-  if (!lastPlayerEvm || !pot) {
-    console.error('Storage parse: missing last_player_evm or pot');
-    return;
+  // Claims on the *live* round set claim_requested on current_session only; the session is not in
+  // pending_sessions until someone calls start_session. Try this first, but do not return early:
+  // a stuck current payout must not starve older pending sessions (same poll drains pending too).
+  const parsed0 = parseStorage(storage);
+  const { currentSessionId, currentSession, pendingSessionIds, pendingSessions } = parsed0;
+
+  if (pendingSessionIds.length > 0 && pendingSessions.size === 0) {
+    console.warn(
+      '[relayer] pending_session_ids is non-empty but pending map parsed 0 entries — RPC map shape may have changed; set RELAYER_VERBOSE_CLAIM=1',
+      { ids: pendingSessionIds },
+    );
   }
 
-  const amount = BigInt(pot);
+  const currentEnded = currentSession?.sessionEnd != null && Number(currentSession.sessionEnd) <= nowSec;
+  const currentClaimable =
+    currentSessionId != null &&
+    currentSession?.claimRequested &&
+    currentSession?.pot &&
+    BigInt(currentSession.pot) > 0n &&
+    currentSession?.lastPlayerEvm &&
+    currentEnded;
 
-  const winner = resolveWinnerEvm(lastPlayerEvm);
-  if (!winner) {
-    console.error('[relayer] Could not parse EVM winner from storage last_player_evm:', lastPlayerEvm);
-    return;
+  if (VERBOSE_CLAIM) {
+    const pendingClaimIdsInListOrder = pendingSessionIds.filter((id) =>
+      pendingSessions.get(String(id))?.claimRequested,
+    );
+    const pendingClaimIdsFromMap = [...pendingSessions.entries()]
+      .filter(([, s]) => s.claimRequested)
+      .map(([id]) => id);
+    console.log('claim scan', {
+      nowSec,
+      currentSessionId,
+      currentClaimRequested: currentSession?.claimRequested ?? false,
+      currentEnded,
+      currentPot: currentSession?.pot ?? null,
+      currentLastPlayerEvm: currentSession?.lastPlayerEvm ?? null,
+      willTryCurrentPayout: currentClaimable,
+      pendingIdsCount: pendingSessionIds.length,
+      pendingMapSize: pendingSessions.size,
+      pendingWithClaimRequestedListOrder: pendingClaimIdsInListOrder,
+      pendingWithClaimRequestedFromMap: pendingClaimIdsFromMap,
+      listEmptyButMapHasEntries: pendingSessionIds.length === 0 && pendingSessions.size > 0,
+    });
   }
 
-  // Check if the escrow already emitted PaidOut for this winner (e.g. previous run, within last 999 blocks).
-  const existingPayoutTx = await checkAlreadyPaidOut(winner);
-  if (existingPayoutTx || payoutSent) {
-    await callMarkPaid();
-    return;
+  if (currentClaimable) {
+    await tryPayoutAndMarkPaid(currentSessionId, currentSession.lastPlayerEvm, currentSession.pot);
   }
 
-  try {
-    const tx = await escrowWithWallet.payout(winner, amount);
-    await tx.wait();
-    payoutSent = true;
-    await callMarkPaid();
-  } catch (err) {
-    const revertReason = decodeRevertReason(err);
-    if (revertReason && revertReason.toLowerCase().includes('balance too low')) {
-      // Escrow balance is zero — payout was already sent in a previous run.
-      // Set payoutSent so we don't retry payout, then sync Tezos via mark_paid.
-      payoutSent = true;
-      await callMarkPaid();
-    } else if (revertReason) {
-      console.error('[relayer] Payout revert reason:', revertReason);
-    } else {
-      console.error('[relayer] Payout failed:', err.shortMessage ?? err.message);
+  // Drain pending sessions with claim_requested (newest-first list order). Re-fetch storage each
+  // iteration so mark_paid removals are visible.
+  const maxPendingPasses = 12;
+  for (let pass = 0; pass < maxPendingPasses; pass++) {
+    let fresh;
+    try {
+      fresh = await fetchStorage();
+    } catch (err) {
+      console.error('Storage fetch error:', err.message);
+      return;
     }
+    const parsed = parseStorage(fresh);
+    const nextClaimableSessionId = nextPendingClaimableSessionId(parsed);
+
+    if (nextClaimableSessionId == null) return;
+
+    const session = parsed.pendingSessions.get(String(nextClaimableSessionId));
+    if (!session?.winnerEvm || !session?.pot) {
+      console.error('[relayer] pending session missing winner_evm or pot', {
+        sessionId: nextClaimableSessionId,
+        session,
+      });
+      return;
+    }
+
+    await tryPayoutAndMarkPaid(nextClaimableSessionId, session.winnerEvm, session.pot);
   }
 }
 
@@ -158,7 +340,7 @@ async function checkClaimAndPayout() {
 // Bytes tag   = 0x0a  followed by 4-byte big-endian length then raw bytes
 // Int/Nat tag = 0x00  followed by zarith-encoded unsigned integer
 //
-// record_deposit: Pair(address, nat)
+// record_deposit: Pair(nat, Pair(address, Pair(bytes, nat)))
 //   address encoded as optimised 22-byte binary (not a string literal):
 //     tz1 → 0x00 0x00 + 20-byte hash
 //     tz2 → 0x00 0x01 + 20-byte hash
@@ -335,10 +517,11 @@ async function rpcEthereumToTezos(evmAddress) {
 }
 
 /**
- * Encode record_deposit parameter: Pair(address, Pair(bytes, nat))
+ * Encode record_deposit parameter: Pair(nat, Pair(address, Pair(bytes, nat)))
  * The address is the Tezos-side identity; evmAddress is the raw 20-byte EVM wallet.
  */
-function encodeRecordDeposit(tezosAddress, evmAddress, amount) {
+function encodeRecordDeposit(sessionId, tezosAddress, evmAddress, amount) {
+  const sessionIdBytes = michelineIntEncode(sessionId);
   const addrNode = encodeMichelineAddress(tezosAddress);
 
   // Raw 20-byte EVM address as a Micheline bytes node: 0x0a + 4-byte length + bytes
@@ -350,11 +533,14 @@ function encodeRecordDeposit(tezosAddress, evmAddress, amount) {
   const amountBytes = michelineIntEncode(amount);
 
   const encoded = Buffer.concat([
-    Buffer.from([0x07, 0x07]), // Outer Pair (address, inner)
+    Buffer.from([0x07, 0x07]), // Pair(session_id, inner)
+    Buffer.from([0x00]),
+    sessionIdBytes,
+    Buffer.from([0x07, 0x07]), // Pair(address, inner)
     addrNode,
-    Buffer.from([0x07, 0x07]), // Inner Pair (bytes, nat)
+    Buffer.from([0x07, 0x07]), // Pair(bytes, nat)
     evmNode,
-    Buffer.from([0x00]),       // nat tag
+    Buffer.from([0x00]),
     amountBytes,
   ]);
 
@@ -398,17 +584,17 @@ function resolveWinnerEvm(lastPlayerEvm) {
   }
 }
 
-async function checkAlreadyPaidOut(winner) {
+async function checkAlreadyPaidOut(winner, expectedAmount) {
   try {
     const currentBlock = await provider.getBlockNumber();
     const fromBlock = Math.max(0, currentBlock - MAX_LOG_WINDOW);
     const byWinner = await escrow.queryFilter(escrow.filters.PaidOut(winner), fromBlock, 'latest');
-    if (byWinner.length > 0) {
-      return byWinner[byWinner.length - 1].transactionHash ?? null;
-    }
-    const all = await escrow.queryFilter(escrow.filters.PaidOut(), fromBlock, 'latest');
-    if (all.length > 0) {
-      return all[all.length - 1].transactionHash ?? null;
+    for (let i = byWinner.length - 1; i >= 0; i--) {
+      const ev = byWinner[i];
+      const paid = ev.args?.amount ?? ev.args?.[1];
+      if (paid === undefined) continue;
+      if (expectedAmount != null && BigInt(paid) !== BigInt(expectedAmount)) continue;
+      return ev.transactionHash ?? null;
     }
   } catch (err) {
     console.error('[relayer] PaidOut query failed:', err.message);
@@ -416,16 +602,23 @@ async function checkAlreadyPaidOut(winner) {
   return null;
 }
 
-async function callMarkPaid() {
+function encodeNatArg(value) {
+  const amountBytes = michelineIntEncode(value);
+  return `0x00${amountBytes.toString('hex')}`;
+}
+
+async function callMarkPaid(sessionId) {
   try {
+    console.log('[relayer] mark_paid submit', { sessionId: String(sessionId), game: GAME_KT1 });
     const tx = await gateway.callMichelson(
       GAME_KT1,
       'mark_paid',
-      UNIT_BYTES,
+      encodeNatArg(sessionId),
       { gasLimit: CRAC_GAS_LIMIT }
     );
 
     await tx.wait();
+    console.log('[relayer] mark_paid confirmed', { sessionId: String(sessionId), hash: tx.hash });
   } catch (markPaidErr) {
     const reason = decodeRevertReason(markPaidErr);
     if (reason) {
@@ -452,8 +645,13 @@ async function processDeposited(log) {
   const { player, amount } = parsed.args;
 
   try {
+    const storage = await fetchStorage();
+    const { currentSessionId } = parseStorage(storage);
+    if (currentSessionId == null) {
+      throw new Error('Could not read current_session_id from Tezlink storage');
+    }
     const tezosAddr = await rpcEthereumToTezos(player);
-    const encodedBytes = encodeRecordDeposit(tezosAddr, player, amount);
+    const encodedBytes = encodeRecordDeposit(currentSessionId, tezosAddr, player, amount);
     const tx = await gateway.callMichelson(
       GAME_KT1,
       'record_deposit',
@@ -549,4 +747,3 @@ if (renderPort) {
 }
 
 main().catch(console.error);
-

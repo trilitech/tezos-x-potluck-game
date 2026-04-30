@@ -28,7 +28,7 @@ The hosted stack you use (for example a public testnet, previewnet, or a future 
 | --------------------------- | ------------------------ | --------------------------------------------------------- |
 | EVM RPC URL                 | Official doc / dashboard | Tentative until you paste the current value               |
 | EVM chain ID                | Official doc / dashboard | Same                                                      |
-| Michelson / Tezlink RPC URL | Official doc / dashboard | Used for Temple and for `curl` storage checks             |
+| Tezos X Tezlink RPC URL    | Official doc / dashboard | Used for Temple, SmartPy IDE deployment, and `curl` storage checks |
 | EVM block explorer          | Official doc / dashboard | Often a Blockscout-style host; the dashboard will name it |
 | Michelson explorer          | Official doc / dashboard | Used to inspect `KT1` storage                             |
 | Faucet                      | Official doc / dashboard | For both sides if applicable                              |
@@ -99,9 +99,8 @@ You do need:
 - Temple Wallet for the Michelson interface
 - test funds from the faucet linked in the official doc / dashboard
 - a Solidity workflow such as Remix, Hardhat, or Foundry
-- `**ligo`** installed (the [Ligo](https://ligolang.org/) compiler on your `PATH`) so you can write the contract in CameLIGO and compile it to Michelson
-- **Octez** installed (`octez-client` on your `PATH`) so you can originate the Michelson contract and run the Octez commands shown below
-- a **funded account** registered locally as an `octez-client` alias, which is just the local name Octez uses for a key you imported on your machine and which you will pass to `transferring … from <alias>` below. If you have not set that up yet, follow the relevant Octez client account / key setup docs before continuing
+- the **SmartPy IDE**, which is a web-based IDE for writing Tezos smart contracts in SmartPy, a Python-flavored language for Tezos. If you already know Remix, the SmartPy IDE plays a similar role on the Tezos side: write the contract, run it, connect a wallet, and deploy from the browser
+- a wallet on the Michelson side that is funded with enough **XTZ** to pay gas fees when you deploy the contract. You can get test XTZ from the faucet linked in the table at the start of this tutorial
 
 ---
 
@@ -143,51 +142,64 @@ We will use that value for both `increment` and `decrement` in this example.
 
 You need the `KT1` address before you deploy the Solidity contract’s constructor. A `KT1` address is a Tezos smart contract address on the Michelson side. Doing Michelson first also matches how you’ll verify storage: you establish the baseline, then you change it from the EVM side.
 
-### A.2 Write the contract in CameLIGO, then compile to Michelson
+### A.2 Write the contract in SmartPy
 
 We keep the example small, but we add `**decrement`** so the EVM side is not only repeating “add one” while Michelson already did the same story. `**reset**` is still there so you can run the demo many times.
 
-Write the contract in CameLIGO in a folder of your choice, then run the compile command below. The `octez-client` command in section A.4 expects that exact Michelson file name (`running counter-nac-tutorial.tz`). Storage is an `**int**`, so you still read a single “counter” value in the explorer.
+Write the contract in SmartPy, then use the SmartPy IDE to compile and deploy it. Storage is still just a single counter that starts at `**0**`, so you read one value in the explorer.
 
-**Source — save as `counter-nac-tutorial.mligo`:**
+**Source — save as `counter-nac-tutorial.py`:**
 
-```ocaml
-module CounterNacTutorial = struct
-  type storage = int
+```python
+import smartpy as sp  # type: ignore
 
-  type return_ = operation list * storage
+@sp.module
+def main():
+    class CounterNacTutorial(sp.Contract):
+        def __init__(self):
+            self.data.counter = 0  # storage is a simple int, starts at 0
 
-  [@entry]
-  let increment (_u : unit) (s : storage) : return_ = ([], s + 1)
+        @sp.entrypoint
+        def increment(self):
+            self.data.counter += 1
 
-  [@entry]
-  let decrement (_u : unit) (s : storage) : return_ =
-    if s = 0 then (failwith "at zero" : return_) else ([], s - 1)
+        @sp.entrypoint
+        def decrement(self):
+            assert self.data.counter > 0, "at zero"
+            self.data.counter -= 1
 
-  [@entry]
-  let reset (_u : unit) (_s : storage) : return_ = ([], 0)
-end
+        @sp.entrypoint
+        def reset(self):
+            self.data.counter = 0
+
+
+if "main" in __name__:
+
+    @sp.add_test()
+    def test():
+        sc = sp.test_scenario("CounterNacTutorial", main)
+        c = main.CounterNacTutorial()
+        sc.h1("Originate")
+        sc += c
+
+        sc.h2("Increment twice")
+        c.increment()
+        c.increment()
+        sc.verify(c.data.counter == 2)
+
+        sc.h2("Decrement once")
+        c.decrement()
+        sc.verify(c.data.counter == 1)
+
+        sc.h2("Reset")
+        c.reset()
+        sc.verify(c.data.counter == 0)
+
+        sc.h2("Decrement at zero should fail")
+        c.decrement(_valid=False, _exception="at zero")
 ```
 
-#### Step 1: Compile to Michelson
-
-In a terminal, `cd` into that folder, then run:
-
-```bash
-ligo compile contract counter-nac-tutorial.mligo -m CounterNacTutorial > counter-nac-tutorial.tz
-```
-
-You should now have `**counter-nac-tutorial.tz**` next to the `.mligo` file. If the command prints errors, fix the source and run it again until it succeeds with no output on stderr (the contract is written only to the `.tz` file).
-
-#### Step 2: (Optional) Compile initial storage for `--init`
-
-Ligo can also print the Micheline form of the initial storage (handy if your tooling wants a pasted literal instead of `'0'`):
-
-```bash
-ligo compile storage counter-nac-tutorial.mligo '0' -m CounterNacTutorial
-```
-
-For this tutorial’s `octez-client` line, `**--init '0'**` is enough because storage is a plain `int` starting at zero.
+In the next step, you will paste this contract into the SmartPy IDE, run it, and deploy it to the Michelson side of Tezos X.
 
 **What does this contract do?**
 
@@ -197,52 +209,31 @@ For this tutorial’s `octez-client` line, `**--init '0'**` is enough because st
 
 Those names are the Michelson entrypoints your Solidity contract will call through the gateway (`"increment"`, `"decrement"`, and `"reset"`).
 
-### A.3 Connecting Temple
+### A.3 Connect Temple
 
-1. Open the official doc / dashboard and find the **Michelson-side** (Tezlink) RPC URL.
+1. Open the official doc / dashboard and find the **Tezos X Tezlink RPC** URL.
 2. In Temple → **Settings** → **Networks** → **Add network**, paste the RPC and the other fields exactly as documented.
 3. Switch Temple to that network.
 4. Use the faucet from the same doc / dashboard so Temple has test funds.
 
-### A.4 Originating the contract with `octez-client`
+### A.4 Deploy the SmartPy contract from the SmartPy IDE
 
-You will run a single `**octez-client originate contract`** invocation: point `--endpoint` at the **Michelson / Tezlink** RPC from the official doc, pass `**running counter-nac-tutorial.tz`** from your current directory, and set initial storage with `**--init**`.
+The easiest way to deploy this tutorial contract is with the SmartPy IDE, which is available at [smartpy.io/ide](https://smartpy.io/ide). It is a web-based IDE for Tezos contracts written in SmartPy, and if you have used Remix for Solidity before, the workflow should feel familiar.
 
-1. **Configure the signer.** Import or use a funded account the way you normally do for Tezos. The command below uses `**bootstrap1`** as the account alias in `transferring 0 from bootstrap1`; that name appears on some public Tezlink demos, but **your network might use another alias**. Replace `**bootstrap1`** with whatever alias `octez-client` knows for your funded key (for example after `octez-client import secret key myalias …`, use `**myalias**`).
-2. In a terminal, `**cd` into the folder** where you compiled `**counter-nac-tutorial.tz`** in section A.2. The next command assumes that exact file name in the **current working directory**:
-
-```bash
-cd /path/to/the/folder/where/your/counter-nac-tutorial.tz/lives
-```
-
-1. Set the Michelson RPC to the value from the official doc / dashboard (must be the **Tezlink** / Michelson interface URL, not the EVM JSON-RPC):
-
-```bash
-export MICHELSON_RPC="https://demo.txpark.nomadic-labs.com/rpc/tezlink"
-# ↑ example only — replace with the current URL from the official doc / dashboard
-```
-
-1. **Originate** the contract (pick any unused local alias instead of `counter_nac_tutorial` if you prefer):
-
-```bash
-octez-client --endpoint "$MICHELSON_RPC" \
-  originate contract counter_nac_tutorial \
-  transferring 0 from bootstrap1 \
-  running counter-nac-tutorial.tz \
-  --init '0' \
-  --burn-cap 1 \
-  --fee 0.05
-```
-
-- `**--init '0'**` is the initial storage for `storage int` (the counter starts at zero).
-- If the contract alias `**counter_nac_tutorial**` already exists locally from a previous attempt, add `**--force**` to the same command so `octez-client` can overwrite the alias.
-- Adjust `**--burn-cap**` / `**--fee**` if `octez-client` asks for higher caps.
-
-1. When the command finishes, `**octez-client` prints the new `KT1` address** in the success output. Copy that `**KT1…`** to your scratch pad — you will paste it into the Solidity constructor.
+1. Open [smartpy.io/ide](https://smartpy.io/ide).
+2. Replace the default contract in the editor with the `**counter-nac-tutorial.py**` contract from section A.2.
+3. Click `**Run**` to make sure the contract compiles successfully.
+4. Click `**Deploy Contract**`, then click `**Continue**`.
+5. In the deploy form, either paste the **Tezos X Tezlink RPC** value from earlier into the `**Node**` and `**Network**` input fields, or select `**Tezos X Previewnet**` from the network dropdown if it is already listed in the IDE.
+6. Click `**Wallet**`, select an account, and use **Beacon** to connect a wallet you already have on the Tezos X Michelson network.
+7. Make sure that wallet is funded with enough `**XTZ**` to pay gas fees. If it is not, use the faucet linked in the table at the start of this tutorial.
+8. Click `**Estimate Cost**`. If fee estimation fails, enter a fee manually so you can continue.
+9. Click `**Deploy Contract**`.
+10. Wait for the success state. When deployment finishes, the IDE shows a `**Successful Deployment**` checkmark together with your new `**KT1`** contract address.
 
 At the end you must have:
 
-- the `**KT1` contract address** (from the originate output)
+- the `**KT1` contract address** (from the SmartPy IDE deployment success screen)
 - confirmation that **initial storage is `0`** (you will double-check in the next step via explorer or `curl`)
 
 ### A.5 Verify storage is 0 (before any EVM call)
@@ -256,7 +247,7 @@ At the end you must have:
 
 **Option 2 — RPC (`curl`)**
 
-1. Take the Michelson RPC base URL from the doc / dashboard (call it `{MICHELSON_RPC}`).
+1. Take the **Tezos X Tezlink RPC** base URL from the doc / dashboard (call it `{MICHELSON_RPC}`).
 2. Run (replace `{KT1}`):
 
 ```bash

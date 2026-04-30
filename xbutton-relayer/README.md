@@ -15,6 +15,8 @@ Without the relayer, deposits do not update Tezos storage and winners are not pa
 
 - By default the relayer only prints when it finds **`Deposited`** logs on **`POT_ADDRESS`**. If **`POT_ADDRESS`** (and the frontend **`VITE_POT_ADDRESS`**) point at an old escrow while users deposit to another contract, **`depositedLogsInBatch` stays 0** and you will see almost nothing after startup.
 - Set **`RELAYER_VERBOSE_POLL=1`** to print **`[relayer] poll tick`** every interval so you can confirm the process is running and scanning.
+- Set **`RELAYER_VERBOSE_CLAIM=1`** to print each **`[relayer] claim scan`** (current vs pending `claim_requested`, map sizes) plus payout / `mark_paid` steps.
+- **Pending payouts:** the relayer must parse **`pending_sessions`** (map as JSON **array**) and **`pending_session_ids`** (Michelson **list** as Cons *or* JSON **array** of `{ int: … }`). If **`pendingIdsCount` is 0** but **`pendingMapSize` &gt; 0**, the relayer still drains claims by scanning the map (newest id first). **`RELAYER_VERBOSE_CLAIM=1`** logs **`pendingWithClaimRequestedFromMap`** vs list order.
 - Production (e.g. Render) logs are on the host dashboard, not in your local terminal unless you run **`npm run dev`** locally with the same **`.env`**.
 
 ## Escrow & token

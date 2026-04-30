@@ -10,7 +10,9 @@ import {
   PotButton,
   PotFooter,
   PotzLuckPotIcon,
+  RecentSessionsClaimInfo,
   createEventLogEntryId,
+  isPayoutSuccessLogMessage,
   shortAddr,
   type EventLogEntry,
   type EventLogTone,
@@ -38,8 +40,8 @@ const evmExplorerUrl =
 const tezosExplorerBase =
   import.meta.env.VITE_TEZOS_EXPLORER_BASE ?? "https://sandbox.tezlink.tzkt.io";
 const chainId = BigInt(import.meta.env.VITE_CHAIN_ID ?? "127124");
-const usdcAddress = import.meta.env.VITE_USDC_ADDRESS ?? "0x92E791DF3Dd5A8704f0e7d9B3003A0627d95d017";
-const potAddress = import.meta.env.VITE_POT_ADDRESS ?? "0x34A76754E2aA034c02FEd2b87b5a6f647043d441";
+const usdcAddress = import.meta.env.VITE_USDC_ADDRESS ?? "0x257De96BE880EF01894304701C4aF4ef08FCbF9a";
+const potAddress = import.meta.env.VITE_POT_ADDRESS ?? "0x1B3d06699aBE347D3b835D0DA32591B4644730C0";
 const gameContract = import.meta.env.VITE_GAME_CONTRACT ?? "KT1Whp8174wXWCmhKKojfS3AdzKgTRaH9mie";
 const cracPrecompile =
   import.meta.env.VITE_CRAC_PRECOMPILE ?? "0xff00000000000000000000000000000000000007";
@@ -57,8 +59,20 @@ const faucetUrl =
 const DEFAULT_AIRDROP_API_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/api/airdrop";
 const airdropApiUrl = import.meta.env.VITE_AIRDROP_API_URL?.trim() || DEFAULT_AIRDROP_API_URL;
 
-/** Shown in status + event log when Michelson storage reports payout completed (deduped in payout effect). */
-const PAYOUT_SUCCESS_MESSAGE = "The winner has been paid.";
+function formatPotPayoutSuccessMessage(sessionId: string, potDisplay: string | null | undefined): string {
+  const head = `Game #${sessionId}: Payout confirmed.`;
+  if (potDisplay != null && potDisplay !== "" && potDisplay !== "—" && potDisplay !== "0") {
+    return `${head} ${potDisplay} USDC sent from the pot to your wallet. Click Play to keep playing!`;
+  }
+  return `${head} USDC was sent from the pot to your wallet. Click Play to keep playing!`;
+}
+
+/** SessionStorage keys cleared in `markPayoutSessionCompletedInStorage`. */
+const RELAYER_PROGRESS_LOG_KEY_PREFIX = "potzluck_relayer_progress_v1_";
+const PASSIVE_CLAIM_WAIT_LOG_KEY_PREFIX = "potzluck_passive_claim_wait_v1_";
+
+/** EVM log scan depth when resolving PaidOut tx after claim (escrow → winner). */
+const PAYOUT_LOG_LOOKBACK_BLOCKS = 4000;
 const AIRDROP_USDC_AMOUNT = "5";
 const AIRDROP_XTZ_AMOUNT = "5";
 const TEZOS_X_RELAYER_RDNS = "com.tezosx.relayer";
@@ -75,12 +89,12 @@ function airdropDeliveredLogMessage(usdc: boolean, xtz: boolean): string {
 
 const tzktApiUrl = tezlinkRpc.replace(/\/rpc\/tezlink\/?$/, "") + "/tzkt";
 
-/** Path segment for `{VITE_TEZOS_EXPLORER_BASE}/{path}/operations` (Tezlink tzkt). Defaults to game KT1; use rollup-style id if your explorer requires it. */
+/** Path segment for `{VITE_TEZOS_EXPLORER_BASE}/{path}/operations` (Michelson-interface tzkt). Defaults to game KT1; use rollup-style id if your explorer requires it. */
 const tezktGameOperationsPath =
   import.meta.env.VITE_TEZKT_GAME_OPERATIONS_PATH?.trim() || gameContract;
 
 const CONFIG = {
-  appName: "XButton",
+  appName: "Pot(z)Luck",
   evmRpc,
   tezlinkRpc,
   tezlinkStorageUrl: `${tezlinkRpc}/chains/main/blocks/head/context/contracts/${gameContract}/storage`,
@@ -123,7 +137,121 @@ function evmTxUrl(hash: string) {
   return `${CONFIG.evmExplorerUrl}/tx/${h}`;
 }
 
-/** Tezlink tzkt: contract (or rollup) operations list — e.g. `…/BLS2…/operations` or `…/KT1…/operations`. */
+const EVENT_LOG_STORAGE_KEY = "potzluck_event_log_v1";
+const MAX_STORED_LOG_ENTRIES = 25;
+
+function readStoredEventLog(): EventLogEntry[] {
+  if (typeof sessionStorage === "undefined") return [];
+  try {
+    const raw = sessionStorage.getItem(EVENT_LOG_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (e): e is EventLogEntry =>
+          e != null &&
+          typeof e === "object" &&
+          typeof (e as EventLogEntry).id === "string" &&
+          typeof (e as EventLogEntry).msg === "string" &&
+          ((e as EventLogEntry).tone === "info" ||
+            (e as EventLogEntry).tone === "success" ||
+            (e as EventLogEntry).tone === "error"),
+      )
+      .map((e) => {
+        const x = e as EventLogEntry & { relatedUrl?: unknown; relatedLabel?: unknown };
+        return {
+          ...e,
+          ...(typeof x.relatedUrl === "string" ? { relatedUrl: x.relatedUrl } : {}),
+          ...(typeof x.relatedLabel === "string" ? { relatedLabel: x.relatedLabel } : {}),
+        };
+      })
+      .slice(-MAX_STORED_LOG_ENTRIES);
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredEventLog(entries: EventLogEntry[]) {
+  try {
+    sessionStorage.setItem(EVENT_LOG_STORAGE_KEY, JSON.stringify(entries.slice(-MAX_STORED_LOG_ENTRIES)));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+const PAYOUT_WAIT_IDS_KEY = "potzluck_payout_wait_ids_v1";
+const PAYOUT_DONE_IDS_KEY = "potzluck_payout_done_ids_v1";
+const PAYOUT_POT_META_KEY = "potzluck_payout_pot_meta_v1";
+
+type PayoutPotMeta = Record<string, { potRaw: string; potDisplay: string }>;
+
+function readStringIdSet(key: string): Set<string> {
+  if (typeof sessionStorage === "undefined") return new Set();
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return new Set();
+    const a = JSON.parse(raw) as unknown;
+    if (!Array.isArray(a)) return new Set();
+    return new Set(a.filter((x): x is string => typeof x === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function writeStringIdSet(key: string, ids: Set<string>) {
+  try {
+    sessionStorage.setItem(key, JSON.stringify([...ids]));
+  } catch {
+    /* ignore */
+  }
+}
+
+function readPayoutPotMeta(): PayoutPotMeta {
+  if (typeof sessionStorage === "undefined") return {};
+  try {
+    const raw = sessionStorage.getItem(PAYOUT_POT_META_KEY);
+    if (!raw) return {};
+    const o = JSON.parse(raw) as unknown;
+    if (!o || typeof o !== "object" || Array.isArray(o)) return {};
+    return o as PayoutPotMeta;
+  } catch {
+    return {};
+  }
+}
+
+function writePayoutPotMeta(meta: PayoutPotMeta) {
+  try {
+    sessionStorage.setItem(PAYOUT_POT_META_KEY, JSON.stringify(meta));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** After an interactive claim flow logs payout success, skip duplicate completion from the payout notifier effect. */
+function markPayoutSessionCompletedInStorage(sessionId: string) {
+  if (typeof sessionStorage === "undefined") return;
+  const w = readStringIdSet(PAYOUT_WAIT_IDS_KEY);
+  w.delete(sessionId);
+  writeStringIdSet(PAYOUT_WAIT_IDS_KEY, w);
+  const d = readStringIdSet(PAYOUT_DONE_IDS_KEY);
+  d.add(sessionId);
+  writeStringIdSet(PAYOUT_DONE_IDS_KEY, d);
+  const meta = readPayoutPotMeta();
+  if (meta[sessionId]) {
+    const next = { ...meta };
+    delete next[sessionId];
+    writePayoutPotMeta(next);
+  }
+  try {
+    sessionStorage.removeItem(`${RELAYER_PROGRESS_LOG_KEY_PREFIX}${sessionId}`);
+    sessionStorage.removeItem(`${PASSIVE_CLAIM_WAIT_LOG_KEY_PREFIX}${sessionId}`);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Michelson-interface tzkt: contract (or rollup) operations list — e.g. `…/BLS2…/operations` or `…/KT1…/operations`. */
 function tezosGameOperationsUrl(): string {
   const base = CONFIG.tezosExplorerBase.replace(/\/$/, "");
   const seg = String(CONFIG.tezktGameOperationsPath).replace(/^\//, "");
@@ -166,16 +294,11 @@ const GATEWAY_ABI = [
   "function callMichelson(string destination, string entrypoint, bytes data) external payable",
 ];
 
-// Micheline binary for Unit - the claim entrypoint parameter.
-// The gateway routes by entrypoint name, so we only encode the parameter value itself.
-// 03 = bare prim (no args, no annotations), 0b = D_Unit
-const CLAIM_PARAM_HEX = "030b";
-
 // Default session duration in seconds (5 minutes). start_session takes an int.
 const DEFAULT_SESSION_DURATION_SEC = 300;
 
 /** Encode a non-negative int as Micheline bytes: 0x00 (int tag) + zarith encoding */
-function encodeMichelineInt(value: number): string {
+function encodeMichelineInt(value: number | string | bigint): string {
   let n = BigInt(value);
   if (n < 0n) throw new Error("encodeMichelineInt: non-negative only");
   const bytes: number[] = [0x00];
@@ -209,6 +332,7 @@ type GameStorageJsonNode = {
 };
 
 type GameState = {
+  currentSessionId: string;
   /** Michelson-side identity for the last depositor - matched against Tezos.get_sender on claim. */
   lastPlayerTezos: string | null;
   /** Raw 20-byte EVM address of the last depositor, stored directly in contract storage. */
@@ -217,7 +341,15 @@ type GameState = {
   potDisplay: string;
   sessionEnd: number;
   claimed: boolean;
-  payoutCompleted: boolean;
+  pendingSessions: Array<{
+    sessionId: string;
+    winnerTezos: string | null;
+    winnerAddress: string | null;
+    potRaw: string;
+    potDisplay: string;
+    sessionEnd: number;
+    claimRequested: boolean;
+  }>;
   fetchedAt: number;
 };
 
@@ -230,13 +362,154 @@ type WalletState = {
   xtzBalanceRaw: bigint | null;
 };
 
-type SessionHistoryEntry = {
+type ClaimTargetSession = {
   sessionId: string;
-  winner: string;
-  potDisplay: string;
-  txHash: string | null;
-  paidOutAt: number;
+  source: "current" | "pending";
+  winnerAddress: string | null;
 };
+
+function addressesEqual(left: string | null | undefined, right: string | null | undefined): boolean {
+  return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
+}
+
+/** Michelson storage pot for the session (raw token units); claim only when deposits built a non-zero pot. */
+function michelsonPotHasFunds(potRaw: string | undefined | null): boolean {
+  if (potRaw == null || potRaw === "") return false;
+  try {
+    return BigInt(potRaw) > 0n;
+  } catch {
+    return false;
+  }
+}
+
+/** Pot shown in Michelson-interface storage for the session being claimed (current round vs pending map). */
+function potInfoForClaimTarget(
+  gameState: GameState | null,
+  target: ClaimTargetSession,
+): { potDisplay: string; potRaw: string } | null {
+  if (!gameState) return null;
+  if (target.source === "pending") {
+    const row = gameState.pendingSessions.find((s) => s.sessionId === target.sessionId);
+    return row ? { potDisplay: row.potDisplay, potRaw: row.potRaw } : null;
+  }
+  return { potDisplay: gameState.potDisplay, potRaw: gameState.potRaw };
+}
+
+function getClaimTargetSession(
+  gameState: GameState | null,
+  walletAddress: string | null,
+  nowSeconds: number,
+): ClaimTargetSession | null {
+  if (!gameState || !walletAddress) return null;
+
+  if (
+    gameState.sessionEnd <= nowSeconds &&
+    !gameState.claimed &&
+    addressesEqual(gameState.lastPlayerAddress, walletAddress) &&
+    michelsonPotHasFunds(gameState.potRaw)
+  ) {
+    return {
+      sessionId: gameState.currentSessionId,
+      source: "current",
+      winnerAddress: gameState.lastPlayerAddress,
+    };
+  }
+
+  const pending = gameState.pendingSessions.find(
+    (session) =>
+      !session.claimRequested &&
+      addressesEqual(session.winnerAddress, walletAddress) &&
+      michelsonPotHasFunds(session.potRaw),
+  );
+  if (!pending) return null;
+
+  return {
+    sessionId: pending.sessionId,
+    source: "pending",
+    winnerAddress: pending.winnerAddress,
+  };
+}
+
+function getPendingClaimRequestedSession(
+  gameState: GameState | null,
+  walletAddress: string | null,
+): ClaimTargetSession | null {
+  if (!gameState || !walletAddress) return null;
+  const pending = gameState.pendingSessions.find(
+    (session) => session.claimRequested && addressesEqual(session.winnerAddress, walletAddress),
+  );
+  if (!pending) return null;
+  return {
+    sessionId: pending.sessionId,
+    source: "pending",
+    winnerAddress: pending.winnerAddress,
+  };
+}
+
+function hasCurrentClaimInFlight(
+  gameState: GameState | null,
+  walletAddress: string | null,
+  nowSeconds: number,
+): boolean {
+  return Boolean(
+    gameState &&
+      walletAddress &&
+      gameState.sessionEnd <= nowSeconds &&
+      gameState.claimed &&
+      addressesEqual(gameState.lastPlayerAddress, walletAddress),
+  );
+}
+
+/** Claim already submitted for this session id (Michelson-interface waiting on relayer). */
+function getDuplicateClaimTargetForWalletSession(
+  gameState: GameState | null,
+  walletAddress: string | null,
+  sessionId: string,
+  nowSeconds: number,
+): ClaimTargetSession | null {
+  if (!gameState || !walletAddress) return null;
+
+  const pending = gameState.pendingSessions.find(
+    (s) =>
+      s.sessionId === sessionId &&
+      s.claimRequested &&
+      addressesEqual(s.winnerAddress, walletAddress),
+  );
+  if (pending) {
+    return { sessionId, source: "pending", winnerAddress: pending.winnerAddress };
+  }
+
+  if (
+    gameState.currentSessionId === sessionId &&
+    gameState.sessionEnd <= nowSeconds &&
+    gameState.claimed &&
+    addressesEqual(gameState.lastPlayerAddress, walletAddress)
+  ) {
+    return { sessionId, source: "current", winnerAddress: gameState.lastPlayerAddress };
+  }
+
+  return null;
+}
+
+function isClaimSettled(nextState: GameState, target: ClaimTargetSession): boolean {
+  const stillPending = nextState.pendingSessions.some((session) => session.sessionId === target.sessionId);
+  if (target.source === "pending") {
+    return !stillPending;
+  }
+
+  if (nextState.currentSessionId === target.sessionId) {
+    return !nextState.claimed && BigInt(nextState.potRaw) === 0n && nextState.lastPlayerAddress == null;
+  }
+
+  return !stillPending;
+}
+
+function compareSessionIdsDesc(left: { sessionId: string }, right: { sessionId: string }): number {
+  const delta = BigInt(right.sessionId) - BigInt(left.sessionId);
+  if (delta > 0n) return 1;
+  if (delta < 0n) return -1;
+  return 0;
+}
 
 function relayerWalletStorageKey(prefix: string, chainIdLike: bigint | null, address: string | null): string | null {
   if (!chainIdLike || !address) return null;
@@ -360,7 +633,7 @@ function pressStepDefs(needsApproval: boolean): FlowStepDef[] {
       id: "relayer_cross_runtime",
       label: "Calling the NAC gateway on the EVM side",
       detail:
-        "The NAC gateway is invoked from the EVM interface so execution reaches Tezlink and updates the game's Michelson-interface storage with your deposit.",
+        "The NAC gateway is invoked from the EVM interface so execution reaches the Michelson-interface and updates the game's Michelson-interface storage with your deposit.",
     },
   ];
 }
@@ -370,25 +643,24 @@ const CLAIM_STEP_DEFS: FlowStepDef[] = [
     id: "check",
     label: "We're checking that you're the last depositor",
     detail:
-      "We compare your connected wallet with the last depositor stored in the game contract (Michelson interface). Only that wallet can claim the pot.",
+      "We compare your connected wallet with the last depositor stored in the game contract. Only that wallet can claim the pot.",
   },
   {
     id: "wallet_claim",
     label: "Confirm the claim in your wallet",
-    detail:
-      "When your wallet opens, approve the claim transaction. Cross-runtime execution routes it from the EVM interface to the game contract on the Michelson interface.",
+    detail: "When your wallet opens, approve the claim transaction.",
   },
   {
     id: "evm_claim",
     label: `Waiting for confirmation from ${TEZOSX_EVM_TESTNET_NAME}`,
-    detail: "After the claim is confirmed, the relayer sees it and pays the winnings from the escrow pot to your wallet in USDC.",
+    detail: "After this confirms, automation pays USDC from escrow and updates Michelson storage.",
   },
 ];
 
 const START_SESSION_STEP_DEFS: FlowStepDef[] = [
   {
     id: "wallet_start",
-    label: "Start a new round",
+    label: "Start a new game",
   },
   {
     id: "evm_start",
@@ -404,7 +676,7 @@ function NetworkInfoModal(props: { open: boolean; onClose: () => void }) {
     ["Created", NETWORK_INFO.created],
     ["EVM Node Version", NETWORK_INFO.evmNodeVersion],
     ["RPC Endpoint", NETWORK_INFO.rpcEndpoint],
-    ["Tezlink Endpoint", NETWORK_INFO.tezlinkEndpoint],
+    ["Michelson-interface endpoint", NETWORK_INFO.tezlinkEndpoint],
     ["Smart Rollup Node", NETWORK_INFO.smartRollupNode],
     ["Chain ID", NETWORK_INFO.chainId],
   ] as const;
@@ -504,10 +776,10 @@ function AirdropModal(props: {
 }
 
 type ActionState =
-  | { kind: "idle"; message: string; txHash?: undefined; tezosOpsUrl?: undefined; steps?: undefined }
-  | { kind: "pending"; message: string; txHash?: string; tezosOpsUrl?: string; steps?: FlowStep[] }
-  | { kind: "success"; message: string; txHash?: string; tezosOpsUrl?: string; steps?: FlowStep[] }
-  | { kind: "error"; message: string; txHash?: string; tezosOpsUrl?: string; steps?: undefined };
+  | { kind: "idle"; message: string; txHash?: undefined; tezosOpsUrl?: undefined; relatedUrl?: undefined; steps?: undefined }
+  | { kind: "pending"; message: string; txHash?: string; tezosOpsUrl?: string; relatedUrl?: string; steps?: FlowStep[] }
+  | { kind: "success"; message: string; txHash?: string; tezosOpsUrl?: string; relatedUrl?: string; steps?: FlowStep[] }
+  | { kind: "error"; message: string; txHash?: string; tezosOpsUrl?: string; relatedUrl?: string; steps?: undefined };
 
 type EthereumProvider = SelectedEthereumProvider;
 
@@ -517,6 +789,13 @@ const TEZOS_X_EVM_WALLET_HINT = `Your wallet does not look like it is on ${TEZOS
 const CLAIM_MISMATCH_LOG_PREFIX = "Only the last person who pressed can claim.";
 
 const CONNECT_WALLET_CHECKING_MSG = "Connecting your wallet and checking your Tezos X balances…";
+
+/**
+ * Shown while polling for Michelson pot after EVM deposit. The trailing `(Ns)` updates in place in the event log
+ * (one line), not as a new entry each tick.
+ */
+const DEPOSIT_MICHELSON_SYNC_LOG_PREFIX =
+  "Calling the NAC gateway to update the game pot's Michelson-interface storage…";
 
 /** Shown while `wallet_switchEthereumChain` / add network is in progress. */
 const CONFIRM_APP_CHAIN_SWITCH_MSG = `Confirm switching to ${TEZOSX_EVM_TESTNET_NAME} in your wallet…`;
@@ -672,20 +951,22 @@ function parseGameStorage(storage: GameStorageJsonNode): {
   lastPlayerTezos: string | null;
   lastPlayerEvmHex: string | null;
 } {
-  // New storage layout:
-  // pair (option %last_player address)
-  //      (pair (option %last_player_evm bytes)
-  //            (pair (nat %pot)
-  //                  (pair (timestamp %session_end)
-  //                        (pair (bool %claim_requested) (bool %payout_completed)))))
-  const levelOne   = storage.args;              // [last_player, pair(last_player_evm,...)]
-  const levelTwo   = levelOne?.[1]?.args;       // [last_player_evm, pair(pot,...)]
-  const levelThree = levelTwo?.[1]?.args;       // [pot, pair(session_end,...)]
-  const levelFour  = levelThree?.[1]?.args;     // [session_end, pair(claim_requested, payout_completed)]
-  const levelFive  = levelFour?.[1]?.args;      // [claim_requested, payout_completed]
+  // pair current_session_id
+  //      (pair current_session
+  //            (pair pending_session_ids pending_sessions))
+  const root = storage.args;
+  const currentSessionId = root?.[0]?.int;
+  const currentSession = root?.[1]?.args?.[0];
+  const pendingSessionsMapNode = root?.[1]?.args?.[1]?.args?.[1];
+  const pendingSessionsMap = Array.isArray(pendingSessionsMapNode) ? pendingSessionsMapNode : [];
+
+  const lastPlayerCell = currentSession?.args?.[0];
+  const lastPlayerEvmCell = currentSession?.args?.[1]?.args?.[0];
+  const potRaw = currentSession?.args?.[1]?.args?.[1]?.args?.[0]?.int;
+  const sessionEndRaw = currentSession?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[0]?.int;
+  const claimedPrim = currentSession?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[1]?.prim;
 
   // last_player (Tezos identity)
-  const lastPlayerCell = levelOne?.[0];
   let lastPlayerTezos: string | null = null;
   let lastPlayerBytes: string | null = null;
 
@@ -702,29 +983,62 @@ function parseGameStorage(storage: GameStorageJsonNode): {
   }
 
   // last_player_evm (raw 20-byte EVM address stored by the relayer)
-  const lastPlayerEvmCell = levelTwo?.[0];
   let lastPlayerEvmHex: string | null = null;
   if (lastPlayerEvmCell?.prim === "Some") {
     const evmBytes = lastPlayerEvmCell.args?.[0]?.bytes;
     if (evmBytes) lastPlayerEvmHex = evmBytes; // 40-char hex, no 0x prefix
   }
 
-  const potRaw = levelThree?.[0]?.int;
-  const sessionEndRaw = levelFour?.[0]?.int;
-  const claimedPrim = levelFive?.[0]?.prim;
-  const payoutCompletedPrim = levelFive?.[1]?.prim;
+  const pendingSessions = pendingSessionsMap.flatMap((entry: GameStorageJsonNode) => {
+    const sessionId = entry?.args?.[0]?.int;
+    const sessionValue = entry?.args?.[1];
+    const winnerTezos = sessionValue?.args?.[0]?.string ?? null;
+    const winnerEvmHex = sessionValue?.args?.[1]?.args?.[0]?.bytes ?? null;
+    const pendingPotRaw = sessionValue?.args?.[1]?.args?.[1]?.args?.[0]?.int;
+    const pendingSessionEndRaw = sessionValue?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[0]?.int;
+    const claimRequestedPrim = sessionValue?.args?.[1]?.args?.[1]?.args?.[1]?.args?.[1]?.prim;
 
-  if (potRaw === undefined || !sessionEndRaw || claimedPrim === undefined) {
+    if (
+      sessionId == null ||
+      pendingPotRaw == null ||
+      pendingSessionEndRaw == null ||
+      claimRequestedPrim == null
+    ) {
+      return [];
+    }
+
+    let winnerAddress: string | null = null;
+    if (winnerEvmHex) {
+      try {
+        winnerAddress = ethers.getAddress(`0x${winnerEvmHex}`);
+      } catch {
+        winnerAddress = null;
+      }
+    }
+
+    return [{
+      sessionId,
+      winnerTezos,
+      winnerAddress,
+      potRaw: pendingPotRaw,
+      potDisplay: formatTokenAmount(BigInt(pendingPotRaw), CONFIG.usdcDecimals),
+      sessionEnd: Number(pendingSessionEndRaw),
+      claimRequested: claimRequestedPrim === "True",
+    }];
+  });
+
+  if (currentSessionId === undefined || potRaw === undefined || !sessionEndRaw || claimedPrim === undefined) {
     throw new Error("Unexpected game contract storage shape.");
   }
 
   return {
     state: {
+      currentSessionId,
       potRaw: potRaw ?? "0",
       potDisplay: formatTokenAmount(BigInt(potRaw ?? "0"), CONFIG.usdcDecimals),
       sessionEnd: Number(sessionEndRaw),
       claimed: claimedPrim === "True",
-      payoutCompleted: payoutCompletedPrim === "True",
+      pendingSessions,
       fetchedAt: Date.now(),
     },
     lastPlayerTezos,
@@ -764,6 +1078,7 @@ async function fetchGameState(): Promise<GameState> {
 
 async function fetchPayoutTxHash(
   winnerAddress: string | null,
+  expectedAmountWei?: bigint | null,
 ): Promise<string | null> {
   const ethereum = getEvmProvider();
   if (!ethereum) return null;
@@ -771,52 +1086,41 @@ async function fetchPayoutTxHash(
     const provider = new ethers.BrowserProvider(ethereum);
     const escrow = new ethers.Contract(CONFIG.potAddress, ESCROW_ABI, provider);
     const latestBlock = await provider.getBlockNumber();
-    const fromBlock = Math.max(0, latestBlock - 999);
+    const fromBlock = Math.max(0, latestBlock - PAYOUT_LOG_LOOKBACK_BLOCKS);
+    const pickHash = (logs: ethers.Log[]) =>
+      logs.length > 0 ? (logs[logs.length - 1].transactionHash ?? null) : null;
+
     if (winnerAddress) {
       const filterByWinner = escrow.filters.PaidOut(winnerAddress);
       const winnerLogs = await escrow.queryFilter(filterByWinner, fromBlock, "latest");
+      if (winnerLogs.length > 0 && expectedAmountWei != null && expectedAmountWei > 0n) {
+        const matched = winnerLogs.filter((log) => {
+          try {
+            const parsed = escrow.interface.parseLog({
+              topics: [...log.topics],
+              data: log.data,
+            });
+            if (!parsed || parsed.name !== "PaidOut") return false;
+            const amt = parsed.args.amount as bigint;
+            return amt === expectedAmountWei;
+          } catch {
+            return false;
+          }
+        });
+        if (matched.length > 0) {
+          return pickHash(matched);
+        }
+      }
       if (winnerLogs.length > 0) {
-        return winnerLogs[winnerLogs.length - 1].transactionHash ?? null;
+        return pickHash(winnerLogs);
       }
     }
     const allLogs = await escrow.queryFilter(escrow.filters.PaidOut(), fromBlock, "latest");
-    if (allLogs.length > 0) {
-      return allLogs[allLogs.length - 1].transactionHash ?? null;
-    }
+    return pickHash(allLogs);
   } catch {
     /* RPC may reject wide log queries */
   }
   return null;
-}
-
-async function fetchRecentCompletedSessions(limit = 10): Promise<SessionHistoryEntry[]> {
-  const provider = new ethers.JsonRpcProvider(CONFIG.evmRpc);
-  const escrow = new ethers.Contract(CONFIG.potAddress, ESCROW_ABI, provider);
-  const latestBlock = await provider.getBlockNumber();
-  const fromBlock = Math.max(0, latestBlock - 5000);
-  const logs = await escrow.queryFilter(escrow.filters.SessionCompleted(), fromBlock, "latest");
-
-  return logs
-    .slice(-limit)
-    .reverse()
-    .flatMap((log) => {
-      const parsed = escrow.interface.parseLog(log);
-      if (!parsed) {
-        return [];
-      }
-      const sessionId = parsed.args[0] as bigint;
-      const winner = parsed.args[1] as string;
-      const potSize = parsed.args[2] as bigint;
-      const paidOutAt = parsed.args[3] as bigint;
-
-      return [{
-        sessionId: sessionId.toString(),
-        winner: ethers.getAddress(winner),
-        potDisplay: formatTokenAmount(potSize, CONFIG.usdcDecimals),
-        txHash: log.transactionHash ?? null,
-        paidOutAt: Number(paidOutAt),
-      }];
-    });
 }
 
 async function sleep(ms: number) {
@@ -968,7 +1272,7 @@ function formatPressButtonError(error: unknown): string {
   if (e?.message === "GAME_STATE_RELAYER_TIMEOUT") {
     return (
       "Your deposit went through, but the Michelson-interface storage did not update in time. Wait a moment, refresh the page, " +
-      "and check the pot on the right."
+      "and check the pot size in the stats panel."
     );
   }
 
@@ -992,7 +1296,7 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
   ) {
     return kind === "claim"
       ? "You cancelled the claim in your wallet."
-      : "You cancelled the session transaction in your wallet.";
+      : "You cancelled the transaction in your wallet.";
   }
 
   if (e?.code === "INSUFFICIENT_FUNDS" || parts.includes("insufficient funds")) {
@@ -1007,10 +1311,10 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
   ) {
     return kind === "claim"
       ? `The claim did not send. Check gas, that you are on ${TEZOSX_EVM_TESTNET_NAME}, then refresh and try again.`
-      : `Could not start a new session. Check gas and that you are on ${TEZOSX_EVM_TESTNET_NAME}, then try again.`;
+      : `Could not start a new game. Check gas and that you are on ${TEZOSX_EVM_TESTNET_NAME}, then try again.`;
   }
 
-  return (e?.shortMessage ?? e?.message ?? (kind === "claim" ? "Claim failed." : "Start session failed.")).trim();
+  return (e?.shortMessage ?? e?.message ?? (kind === "claim" ? "Claim failed." : "Start game failed.")).trim();
 }
 
 function formatAirdropError(error: unknown): string {
@@ -1024,7 +1328,7 @@ function formatAirdropError(error: unknown): string {
 function PotzLuckMark() {
   return (
     <>
-      Po<span className="brand-name-tz">tz</span>Luck
+      Pot<span className="brand-name-tz">(z)</span>Luck
     </>
   );
 }
@@ -1045,7 +1349,11 @@ function App() {
   const [walletError, setWalletError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isClaiming, setIsClaiming] = useState(false);
+  /** Session id currently submitting a claim tx; other sessions keep a normal Claim button. */
+  const [claimingForSessionId, setClaimingForSessionId] = useState<string | null>(null);
+  /** Same as `claimingForSessionId` for async payout notifier (avoids stale effect closures). */
+  const claimingForSessionIdRef = useRef<string | null>(null);
+  claimingForSessionIdRef.current = claimingForSessionId;
   const [isStartingSession, setIsStartingSession] = useState(false);
   const [actionState, setActionState] = useState<ActionState>({
     kind: "idle",
@@ -1071,10 +1379,16 @@ function App() {
   const [connectWalletOptions, setConnectWalletOptions] = useState<Eip6963ProviderDetail[]>([]);
   /** Bumps so wallet listener effect re-binds to the selected EIP-1193 provider. */
   const [evmListenerKey, setEvmListenerKey] = useState(0);
-  const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
-  const [recentSessions, setRecentSessions] = useState<SessionHistoryEntry[]>([]);
+  const [eventLog, setEventLog] = useState<EventLogEntry[]>(() => readStoredEventLog());
   const pushEventLog = useCallback(
-    (msg: string, tone: EventLogTone = "info", evmTxHash?: string, tezosOpsUrl?: string) => {
+    (
+      msg: string,
+      tone: EventLogTone = "info",
+      evmTxHash?: string,
+      tezosOpsUrl?: string,
+      relatedUrl?: string,
+      relatedLabel?: string,
+    ) => {
       setEventLog((prev) => [
         ...prev.slice(-19),
         {
@@ -1083,11 +1397,18 @@ function App() {
           tone,
           ...(evmTxHash ? { txHash: evmTxHash } : {}),
           ...(tezosOpsUrl ? { tezosOpsUrl } : {}),
+          ...(relatedUrl
+            ? { relatedUrl, ...(relatedLabel ? { relatedLabel } : { relatedLabel: "Escrow contract ↗" }) }
+            : {}),
         },
       ]);
     },
     [],
   );
+
+  useEffect(() => {
+    writeStoredEventLog(eventLog);
+  }, [eventLog]);
 
   const dismissAirdropModal = useCallback(() => {
     setAirdropModalState({ open: false, usdc: false, xtz: false });
@@ -1098,12 +1419,23 @@ function App() {
   }, []);
   const depositInFlightRef = useRef(false);
   const freezeGameStateUiRef = useRef(false);
+  /** After start_session + wait, onPotClick sets "Game ready…" then calls pressButton — avoid a redundant "Loading game state…" event-log line. */
+  const skipMichelsonLoadingStatusAfterGameReadyRef = useRef(false);
 
   const hasInjectedWallet =
     typeof window === "undefined" || eip6963Wallets === null || eip6963Wallets.length > 0;
   const onExpectedNetwork = walletState.chainId === CONFIG.chainId;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const sessionActive = gameState ? gameState.sessionEnd > nowSeconds : true;
+  /** "Pot size was" only when the round has ended and Michelson still shows a non-zero pot (e.g. unclaimed); 0 USDC after payout stays "Pot size". */
+  const potSidebarLabel =
+    gameState && !sessionActive && michelsonPotHasFunds(gameState.potRaw) ? "Pot size was" : "Pot size";
+  const claimTargetSession = getClaimTargetSession(gameState, walletState.address, nowSeconds);
+  const unresolvedSessions = useMemo(
+    () => [...(gameState?.pendingSessions ?? [])].sort(compareSessionIdsDesc),
+    [gameState?.pendingSessions],
+  );
+  const sidebarPendingSessions = useMemo(() => unresolvedSessions.slice(0, 5), [unresolvedSessions]);
   const canPressButton =
     hasInjectedWallet &&
     Boolean(walletState.address) &&
@@ -1112,14 +1444,33 @@ function App() {
     sessionActive &&
     !gameState?.claimed;
 
+  const claimInProgressForCurrentTarget =
+    Boolean(claimTargetSession && claimingForSessionId === claimTargetSession.sessionId);
+
+  const claimInProgressForCurrentRoundButton =
+    Boolean(
+      claimTargetSession?.source === "current" &&
+        claimingForSessionId === claimTargetSession.sessionId,
+    );
+
   const canClaim =
     hasInjectedWallet &&
     Boolean(walletState.address) &&
     onExpectedNetwork &&
-    !sessionActive &&
-    !isClaiming &&
-    gameState != null &&
-    !gameState.claimed;
+    !claimInProgressForCurrentTarget &&
+    claimTargetSession != null;
+
+  /**
+   * Primary “Claim Winnings” under the live round stats — only when the **current** Michelson round ended and this
+   * wallet won it. Pending-map wins use per-row Claim only. Stays visible while that claim tx is in flight.
+   */
+  const canShowClaimCurrentRoundButton =
+    hasInjectedWallet &&
+    Boolean(walletState.address) &&
+    onExpectedNetwork &&
+    claimTargetSession != null &&
+    claimTargetSession.source === "current" &&
+    (claimingForSessionId === null || claimingForSessionId === claimTargetSession.sessionId);
 
   // Session ended: allow starting a new round even if prior claim/payout is still pending (on-chain reset).
   const canStartNewSession =
@@ -1135,14 +1486,13 @@ function App() {
   >(() => {
     if (!walletState.address) return "connect";
     if (!onExpectedNetwork) return "wrong-net";
-    if (isSubmitting || isClaiming || isStartingSession) return "depositing";
+    if (isSubmitting || isStartingSession) return "depositing";
     if (sessionActive && gameState && !gameState.claimed) return "play";
     return "idle";
   }, [
     walletState.address,
     onExpectedNetwork,
     isSubmitting,
-    isClaiming,
     isStartingSession,
     sessionActive,
     gameState,
@@ -1179,10 +1529,12 @@ function App() {
   const lastEventLogKey = useRef("");
   /** Dedupes passive vs claim-click logs for “only last player can claim”. */
   const claimMismatchDedupeKeyRef = useRef("");
+  /** Session targeted by the in-flight gateway claim tx (for revert handling). */
+  const claimAttemptTargetRef = useRef<ClaimTargetSession | null>(null);
   useEffect(() => {
     if (actionState.kind === "idle") return;
     // Payout success is pushed from the payout watcher effect (not mirrored here) so it can attach the payout tx hash.
-    if (actionState.kind === "success" && actionState.message === PAYOUT_SUCCESS_MESSAGE) {
+    if (actionState.kind === "success" && isPayoutSuccessLogMessage(actionState.message)) {
       return;
     }
     if (actionState.kind === "error" && actionState.message.startsWith(CLAIM_MISMATCH_LOG_PREFIX)) {
@@ -1194,7 +1546,38 @@ function App() {
     if (actionState.kind === "pending" && actionState.message === CONNECT_WALLET_CHECKING_MSG) {
       return;
     }
-    const key = `${actionState.kind}:${actionState.message}:${actionState.txHash ?? ""}:${actionState.tezosOpsUrl ?? ""}`;
+    if (actionState.kind === "pending" && actionState.message.startsWith(DEPOSIT_MICHELSON_SYNC_LOG_PREFIX)) {
+      const txHash = actionState.txHash;
+      const tezosOpsUrl = actionState.tezosOpsUrl;
+      const relatedUrl = actionState.relatedUrl;
+      setEventLog((prev) => {
+        const last = prev[prev.length - 1];
+        const sameTickLine =
+          last &&
+          last.tone === "info" &&
+          last.msg.startsWith(DEPOSIT_MICHELSON_SYNC_LOG_PREFIX) &&
+          last.txHash === txHash &&
+          last.tezosOpsUrl === tezosOpsUrl;
+        if (sameTickLine) {
+          return [...prev.slice(0, -1), { ...last, msg: actionState.message }];
+        }
+        const entry: EventLogEntry = {
+          id: createEventLogEntryId(),
+          msg: actionState.message,
+          tone: "info",
+          ...(txHash ? { txHash } : {}),
+          ...(tezosOpsUrl ? { tezosOpsUrl } : {}),
+          ...(relatedUrl
+            ? { relatedUrl, relatedLabel: "Escrow contract ↗" as const }
+            : {}),
+        };
+        return [...prev.slice(-19), entry];
+      });
+      lastEventLogKey.current = `pending:deposit_michelson_sync:${txHash ?? ""}:${tezosOpsUrl ?? ""}:${relatedUrl ?? ""}`;
+      return;
+    }
+    const relatedUrl = "relatedUrl" in actionState ? actionState.relatedUrl : undefined;
+    const key = `${actionState.kind}:${actionState.message}:${actionState.txHash ?? ""}:${actionState.tezosOpsUrl ?? ""}:${relatedUrl ?? ""}`;
     if (key === lastEventLogKey.current) return;
     lastEventLogKey.current = key;
     pushEventLog(
@@ -1202,8 +1585,95 @@ function App() {
       actionState.kind === "success" ? "success" : actionState.kind === "error" ? "error" : "info",
       actionState.txHash,
       actionState.tezosOpsUrl,
+      relatedUrl,
     );
-  }, [actionState.kind, actionState.message, actionState.txHash, actionState.tezosOpsUrl, pushEventLog]);
+  }, [actionState, pushEventLog]);
+
+  /** Payout waiting / complete messages go to the event log (not session cards); ids persisted so refresh does not duplicate. */
+  useEffect(() => {
+    if (typeof sessionStorage === "undefined") return;
+    if (!gameState || !walletState.address) return;
+    const addr = walletState.address;
+
+    let waitSet = readStringIdSet(PAYOUT_WAIT_IDS_KEY);
+    const doneSet = readStringIdSet(PAYOUT_DONE_IDS_KEY);
+    let meta = readPayoutPotMeta();
+
+    for (const session of gameState.pendingSessions) {
+      if (!addressesEqual(session.winnerAddress, addr) || !session.claimRequested) continue;
+      const sid = session.sessionId;
+      if (doneSet.has(sid)) continue;
+      if (!waitSet.has(sid)) {
+        waitSet.add(sid);
+        meta = { ...meta, [sid]: { potRaw: session.potRaw, potDisplay: session.potDisplay } };
+        if (claimingForSessionId !== sid) {
+          const k = `${PASSIVE_CLAIM_WAIT_LOG_KEY_PREFIX}${sid}`;
+          if (sessionStorage.getItem(k) !== "1") {
+            sessionStorage.setItem(k, "1");
+            pushEventLog(`Game #${sid}: Claim on record. Waiting for relayer payout…`, "info");
+          }
+        }
+      }
+    }
+
+    const nowSecRel = Math.floor(Date.now() / 1000);
+    if (hasCurrentClaimInFlight(gameState, addr, nowSecRel)) {
+      const sid = gameState.currentSessionId;
+      if (!doneSet.has(sid) && !waitSet.has(sid)) {
+        const coveredByPending = gameState.pendingSessions.some(
+          (s) =>
+            s.sessionId === sid &&
+            addressesEqual(s.winnerAddress, addr) &&
+            s.claimRequested,
+        );
+        if (!coveredByPending) {
+          waitSet.add(sid);
+          meta = { ...meta, [sid]: { potRaw: gameState.potRaw, potDisplay: gameState.potDisplay } };
+          if (claimingForSessionId !== sid) {
+            const k = `${PASSIVE_CLAIM_WAIT_LOG_KEY_PREFIX}${sid}`;
+            if (sessionStorage.getItem(k) !== "1") {
+              sessionStorage.setItem(k, "1");
+              pushEventLog(`Game #${sid}: Claim on record. Waiting for relayer payout…`, "info");
+            }
+          }
+        }
+      }
+    }
+
+    writeStringIdSet(PAYOUT_WAIT_IDS_KEY, waitSet);
+    writePayoutPotMeta(meta);
+
+    const toComplete: string[] = [];
+    for (const sid of waitSet) {
+      if (doneSet.has(sid)) continue;
+      const still = gameState.pendingSessions.some((s) => s.sessionId === sid);
+      if (!still) toComplete.push(sid);
+    }
+
+    if (toComplete.length === 0) return;
+
+    for (const sid of toComplete) {
+      waitSet.delete(sid);
+      const m = meta[sid];
+      meta = Object.fromEntries(Object.entries(meta).filter(([k]) => k !== sid)) as PayoutPotMeta;
+      void (async () => {
+        if (claimingForSessionIdRef.current === sid) return;
+        const payoutHash = await fetchPayoutTxHash(addr, m?.potRaw ? BigInt(m.potRaw) : null);
+        const disp = m?.potDisplay ?? "—";
+        if (readStringIdSet(PAYOUT_DONE_IDS_KEY).has(sid)) return;
+        pushEventLog(
+          formatPotPayoutSuccessMessage(sid, disp !== "—" && disp !== "0" ? disp : null),
+          "success",
+          payoutHash ?? undefined,
+        );
+        markPayoutSessionCompletedInStorage(sid);
+      })();
+    }
+
+    writeStringIdSet(PAYOUT_WAIT_IDS_KEY, waitSet);
+    writeStringIdSet(PAYOUT_DONE_IDS_KEY, doneSet);
+    writePayoutPotMeta(meta);
+  }, [gameState, walletState.address, pushEventLog, claimingForSessionId]);
 
   useEffect(() => {
     if (!walletMenuOpen) return;
@@ -1351,10 +1821,10 @@ function App() {
     }
   }, []);
 
-  const refreshGameState = useCallback(async (syncUi = true) => {
+  const refreshGameState = useCallback(async (syncUi = true, bypassFreeze = false) => {
     try {
       const nextState = await fetchGameState();
-      if (syncUi && !freezeGameStateUiRef.current) {
+      if (syncUi && (bypassFreeze || !freezeGameStateUiRef.current)) {
         setGameState(nextState);
       }
       setGameStateError(null);
@@ -1424,101 +1894,6 @@ function App() {
     },
     [refreshWalletState, pushEventLog],
   );
-
-  const lastPayoutEventFingerprint = useRef("");
-
-  // When payout completes (after claim + relayer), update status, event log, and payout tx when found.
-  // Skip while `claimContract` is still finishing so the async `pushEventLog` here does not reorder ahead
-  // of the mirrored “claim confirmed” line.
-  useEffect(() => {
-    if (!gameState?.claimed) {
-      lastPayoutEventFingerprint.current = "";
-      return;
-    }
-    if (!gameState?.payoutCompleted) {
-      return;
-    }
-    if (isClaiming) {
-      return;
-    }
-
-    const fingerprint = `${gameState.sessionEnd}-${gameState.potRaw}`;
-    if (lastPayoutEventFingerprint.current === fingerprint) {
-      return;
-    }
-    lastPayoutEventFingerprint.current = fingerprint;
-
-    let cancelled = false;
-    const winner = gameState.lastPlayerAddress ?? walletState.address ?? null;
-
-    void (async () => {
-      let payoutHash: string | null = null;
-      try {
-        payoutHash = await fetchPayoutTxHash(winner);
-      } catch {
-        /* non-fatal */
-      }
-      if (cancelled) return;
-
-      pushEventLog(PAYOUT_SUCCESS_MESSAGE, "success", payoutHash ?? undefined);
-
-      setActionState((prev) => {
-        if (prev.kind === "success" && prev.message === PAYOUT_SUCCESS_MESSAGE) {
-          return payoutHash && prev.txHash !== payoutHash
-            ? { ...prev, txHash: payoutHash }
-            : prev;
-        }
-        const m = prev.message.toLowerCase();
-        const looksLikeDepositOrSession =
-          (m.includes("deposit") && m.includes("michelson-interface")) ||
-          m.includes("new session started") ||
-          m.includes("approve usdc") ||
-          m.includes("loading game state");
-        if (looksLikeDepositOrSession) {
-          return prev;
-        }
-        return {
-          kind: "success" as const,
-          message: PAYOUT_SUCCESS_MESSAGE,
-          ...(payoutHash ? { txHash: payoutHash } : {}),
-        };
-      });
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    gameState?.payoutCompleted,
-    gameState?.claimed,
-    gameState?.lastPlayerAddress,
-    gameState?.potRaw,
-    gameState?.sessionEnd,
-    walletState.address,
-    isClaiming,
-    pushEventLog,
-  ]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const sessions = await fetchRecentCompletedSessions(10);
-        if (!cancelled) {
-          setRecentSessions(sessions);
-        }
-      } catch {
-        if (!cancelled) {
-          setRecentSessions([]);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [gameState?.payoutCompleted, gameState?.potRaw]);
 
   useEffect(() => {
     void (async () => {
@@ -1683,8 +2058,8 @@ function App() {
     } else {
       pushEventLog(
         willAirdrop
-          ? "Testnet funds are in your wallet. Click Play when you are ready to start or join a round."
-          : "Wallet connected on Tezos X. Click Play when you are ready to deposit or start a new round.",
+          ? "Testnet funds are in your wallet. Click Play when you are ready to start or join a game."
+          : "Wallet connected on Tezos X. Click Play when you are ready to deposit or start a new game.",
         "info",
       );
     }
@@ -1693,7 +2068,7 @@ function App() {
       kind: "idle",
       message: insufficientMsg
         ? `Add at least ${CONFIG.pressAmount} USDC and a little XTZ for gas, then try Play.`
-        : `Click Play to start or join a round and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
+        : `Click Play to start or join a game and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
     });
   }
 
@@ -1818,8 +2193,8 @@ function App() {
     } else {
       pushEventLog(
         willAirdrop
-          ? "Testnet funds are in your wallet. Click Play when you are ready to start or join a round."
-          : `Network ready on ${TEZOSX_EVM_TESTNET_NAME}. Click Play when you are ready to deposit or start a new round.`,
+          ? "Testnet funds are in your wallet. Click Play when you are ready to start or join a game."
+          : `Network ready on ${TEZOSX_EVM_TESTNET_NAME}. Click Play when you are ready to deposit or start a new game.`,
         "info",
       );
     }
@@ -1827,7 +2202,7 @@ function App() {
       kind: "idle",
       message: insufficientMsg
         ? `Add at least ${CONFIG.pressAmount} USDC and a little XTZ for gas, then try Play.`
-        : `Click Play to start or join a round and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
+        : `Click Play to start or join a game and send ${CONFIG.pressAmount} USDC into the pot when you are ready.`,
     });
   }
 
@@ -1953,7 +2328,7 @@ function App() {
       const elapsed = Math.floor((Date.now() - t0) / 1000);
       setActionState({
         kind: "pending",
-        message: `Deposit confirmed on the EVM interface. Calling the NAC gateway to update Tezlink game state… (${elapsed}s)`,
+        message: `${DEPOSIT_MICHELSON_SYNC_LOG_PREFIX} (${elapsed}s)`,
         steps: markFlowSteps(stepDefs, "relayer_cross_runtime"),
         txHash: depositTxHash,
       });
@@ -1986,11 +2361,30 @@ function App() {
     }
   }
 
+  async function waitForClaimSettlement(target: ClaimTargetSession): Promise<GameState | null> {
+    const deadline = Date.now() + CONFIG.gameStateWaitTimeoutMs;
+
+    while (Date.now() < deadline) {
+      await sleep(Math.min(CONFIG.pollIntervalMs, Math.max(0, deadline - Date.now())));
+      const nextState = await refreshGameState(true, true);
+      if (!nextState) {
+        continue;
+      }
+      if (isClaimSettled(nextState, target)) {
+        return nextState;
+      }
+    }
+
+    return null;
+  }
+
   async function pressButton() {
     if (depositInFlightRef.current) {
       return;
     }
     depositInFlightRef.current = true;
+    const useGameReadyLineForPrepare = skipMichelsonLoadingStatusAfterGameReadyRef.current;
+    skipMichelsonLoadingStatusAfterGameReadyRef.current = false;
 
     const ethereum = getEvmProvider();
     if (!ethereum) {
@@ -2082,7 +2476,9 @@ function App() {
 
     setActionState({
       kind: "pending",
-      message: "Loading game state from the Michelson interface…",
+      message: useGameReadyLineForPrepare
+        ? `Game ready. Confirm your ${CONFIG.pressAmount} USDC deposit into the EVM escrow.`
+        : "Loading game state from the Michelson interface…",
       steps: markFlowSteps(depositSteps, "prepare"),
     });
 
@@ -2095,11 +2491,11 @@ function App() {
       }
 
       if (currentState.claimed) {
-        throw new Error("This round was already claimed.");
+        throw new Error("This game was already claimed.");
       }
 
       if (currentState.sessionEnd <= Math.floor(Date.now() / 1000)) {
-        throw new Error("This round has ended.");
+        throw new Error("This game has ended.");
       }
 
       if (approvalNeeded) {
@@ -2148,7 +2544,7 @@ function App() {
       setDepositFxId((id) => id + 1);
       setActionState({
         kind: "success",
-        message: `Done. You deposited ${CONFIG.pressAmount} USDC into the game pot. Potz luck to you!`,
+        message: `Done. You deposited ${CONFIG.pressAmount} USDC into the game pot. Pot(z)Luck to you!`,
         txHash: tx.hash,
         tezosOpsUrl,
         steps: completeFlowSteps(depositSteps),
@@ -2162,7 +2558,7 @@ function App() {
     }
   }
 
-  async function claimContract() {
+  async function claimContract(targetSessionId?: string) {
     const ethereum = getEvmProvider();
     if (!ethereum) {
       setActionState({ kind: "error", message: "No browser wallet is available in this browser." });
@@ -2179,43 +2575,94 @@ function App() {
       return;
     }
 
-    setIsClaiming(true);
+    const preNow = Math.floor(Date.now() / 1000);
+    const preSid =
+      targetSessionId ??
+      (gameState ? getClaimTargetSession(gameState, walletState.address, preNow)?.sessionId : null) ??
+      gameState?.currentSessionId ??
+      "—";
+
     setActionState({
       kind: "pending",
-      message: "Checking if you can claim…",
+      message: `Game #${preSid}: Checking if you can claim…`,
       steps: markFlowSteps(CLAIM_STEP_DEFS, "check"),
     });
 
     try {
-      const currentState = await refreshGameState();
-      if (currentState?.claimed && !currentState.payoutCompleted) {
+      const currentState = await refreshGameState(true, true);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const inFlightPending = getPendingClaimRequestedSession(currentState, walletState.address);
+      const currentInFlight = hasCurrentClaimInFlight(currentState, walletState.address, nowSec);
+      const naturalClaimTarget = getClaimTargetSession(currentState, walletState.address, nowSec);
+      const duplicateClaimTarget: ClaimTargetSession | null = targetSessionId
+        ? getDuplicateClaimTargetForWalletSession(currentState, walletState.address, targetSessionId, nowSec)
+        : naturalClaimTarget
+          ? getDuplicateClaimTargetForWalletSession(
+              currentState,
+              walletState.address,
+              naturalClaimTarget.sessionId,
+              nowSec,
+            )
+          : inFlightPending
+            ? inFlightPending
+            : currentInFlight && currentState
+              ? {
+                  sessionId: currentState.currentSessionId,
+                  source: "current",
+                  winnerAddress: currentState.lastPlayerAddress,
+                }
+              : null;
+      if (duplicateClaimTarget) {
+        const potInf = potInfoForClaimTarget(currentState, duplicateClaimTarget);
+        const payoutHash =
+          walletState.address && potInf
+            ? await fetchPayoutTxHash(walletState.address, BigInt(potInf.potRaw))
+            : await fetchPayoutTxHash(walletState.address ?? null, null);
+        const sid = duplicateClaimTarget.sessionId;
+        const potLine = potInf ? `${potInf.potDisplay} USDC` : "USDC";
+        const msg = potInf
+          ? `Game #${sid}: Already claimed (${potLine}). Waiting for relayer payout…`
+          : "Claim already recorded. Waiting for relayer payout…";
         setActionState({
           kind: "pending",
-          message:
-            "Your claim is recorded. A relayer is paying the winner—Michelson-interface storage will show payout completed when USDC has been sent.",
-        });
-        setIsClaiming(false);
-        return;
-      }
-      if (currentState?.claimed && currentState.payoutCompleted) {
-        const payoutHash = await fetchPayoutTxHash(
-          currentState.lastPlayerAddress ?? walletState.address ?? null,
-        );
-        setActionState({
-          kind: "success",
-          message: payoutHash
-            ? "Payout complete. Winnings were already paid; payout transaction below."
-            : "Payout complete. Winnings were already paid.",
+          message: msg,
           txHash: payoutHash ?? undefined,
         });
-        setIsClaiming(false);
         return;
       }
 
-      // Pre-flight: compare EVM addresses directly - no RPC call needed now that
-      // last_player_evm is stored in the contract.
-      if (currentState?.lastPlayerAddress && walletState.address) {
-        if (walletState.address.toLowerCase() !== currentState.lastPlayerAddress.toLowerCase()) {
+      let claimTarget = getClaimTargetSession(currentState, walletState.address, nowSec);
+      if (targetSessionId) {
+        if (
+          currentState &&
+          currentState.currentSessionId === targetSessionId &&
+          currentState.sessionEnd <= nowSec &&
+          !currentState.claimed &&
+          addressesEqual(currentState.lastPlayerAddress, walletState.address)
+        ) {
+          claimTarget = {
+            sessionId: targetSessionId,
+            source: "current",
+            winnerAddress: currentState.lastPlayerAddress,
+          };
+        } else {
+          const pendingMatch = currentState?.pendingSessions.find(
+            (session) =>
+              session.sessionId === targetSessionId &&
+              !session.claimRequested &&
+              addressesEqual(session.winnerAddress, walletState.address),
+          );
+          claimTarget = pendingMatch
+            ? {
+                sessionId: pendingMatch.sessionId,
+                source: "pending",
+                winnerAddress: pendingMatch.winnerAddress,
+              }
+            : null;
+        }
+      }
+      if (!claimTarget) {
+        if (currentState?.lastPlayerAddress && walletState.address && !sessionActive) {
           const logMsg = `Only the last person who pressed can claim. Winner wallet: ${shortAddr(currentState.lastPlayerAddress)}.`;
           const key = `${currentState.sessionEnd}-${currentState.lastPlayerAddress}-${walletState.address}`;
           if (claimMismatchDedupeKeyRef.current !== key) {
@@ -2226,14 +2673,29 @@ function App() {
             kind: "error",
             message: logMsg,
           });
-          setIsClaiming(false);
-          return;
+        } else {
+          setActionState({
+            kind: "error",
+            message: "There is no claimable game for this wallet right now.",
+          });
         }
+        return;
       }
+
+      const potForClaim = potInfoForClaimTarget(currentState, claimTarget);
+      if (!potForClaim || !michelsonPotHasFunds(potForClaim.potRaw)) {
+        setActionState({
+          kind: "error",
+          message: `Game #${claimTarget.sessionId} has no pot in Michelson storage — nothing to claim.`,
+        });
+        return;
+      }
+
+      setClaimingForSessionId(claimTarget.sessionId);
 
       setActionState({
         kind: "pending",
-        message: "Winner wallet confirmed from Tezlink storage. Confirm the claim in your wallet.",
+        message: `Game #${claimTarget.sessionId}: You can! Confirm the claim in your wallet.`,
         steps: markFlowSteps(CLAIM_STEP_DEFS, "wallet_claim"),
       });
 
@@ -2241,29 +2703,85 @@ function App() {
       const signer = await provider.getSigner();
       const gateway = new ethers.Contract(CONFIG.cracPrecompile, GATEWAY_ABI, signer);
 
+      claimAttemptTargetRef.current = claimTarget;
       const tx = await gateway.callMichelson(
         CONFIG.gameContract,
         "claim",
-        `0x${CLAIM_PARAM_HEX}`,
+        encodeMichelineInt(claimTarget.sessionId),
         { value: 0n, gasLimit: 2_000_000n }
       );
 
       setActionState({
         kind: "pending",
-        message: `Waiting for your claim transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
+        message: `Game #${claimTarget.sessionId}: Waiting for your claim transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
         steps: markFlowSteps(CLAIM_STEP_DEFS, "evm_claim"),
         txHash: tx.hash,
       });
 
       await tx.wait();
-      await refreshGameState();
+      const stateAfterClaimTx = await refreshGameState(true, true);
+      const potAfterSubmit = potInfoForClaimTarget(stateAfterClaimTx, claimTarget);
 
       setActionState({
-        kind: "success",
-        message: `Your claim transaction is confirmed on ${TEZOSX_EVM_TESTNET_NAME}.`,
+        kind: "pending",
+        message: `Game #${claimTarget.sessionId}: Your Claim is confirmed. Paying you and updating Game #${claimTarget.sessionId} on the Michelson-interface via the NAC Gateway`,
         txHash: tx.hash,
         steps: completeFlowSteps(CLAIM_STEP_DEFS),
       });
+
+      const settledState = await waitForClaimSettlement(claimTarget);
+      const potInfoAfter = potInfoForClaimTarget(
+        settledState ?? (await refreshGameState(true, true)),
+        claimTarget,
+      );
+      /** After mark_paid, current-game storage shows pot 0 — keep the amount from right after the claim tx for logs and PaidOut matching. */
+      const expectedWei = (() => {
+        const wSubmit = potAfterSubmit ? BigInt(potAfterSubmit.potRaw) : null;
+        const wAfter = potInfoAfter ? BigInt(potInfoAfter.potRaw) : null;
+        if (wSubmit != null && wSubmit > 0n) return wSubmit;
+        if (wAfter != null && wAfter > 0n) return wAfter;
+        return wSubmit ?? wAfter;
+      })();
+
+      if (!settledState) {
+        const payoutHashLate = await fetchPayoutTxHash(
+          claimTarget.winnerAddress ?? walletState.address ?? null,
+          expectedWei,
+        );
+        const amountLine = potInfoAfter ? `${potInfoAfter.potDisplay} USDC (Michelson-interface storage)` : "— USDC";
+        setActionState({
+          kind: "pending",
+          message: payoutHashLate
+            ? `Game #${claimTarget.sessionId}: Payout transaction found (${amountLine}). Check links below.`
+            : `Game #${claimTarget.sessionId}: Claim is on-chain (${amountLine}). Waiting for relayer payout — refresh if this persists.`,
+          txHash: payoutHashLate ?? tx.hash,
+          steps: completeFlowSteps(CLAIM_STEP_DEFS),
+        });
+        return;
+      }
+
+      const payoutHash = await fetchPayoutTxHash(
+        claimTarget.winnerAddress ?? walletState.address ?? null,
+        expectedWei,
+      );
+      const potLineResolved =
+        potInfoAfter && BigInt(potInfoAfter.potRaw) > 0n
+          ? potInfoAfter.potDisplay
+          : potAfterSubmit && BigInt(potAfterSubmit.potRaw) > 0n
+            ? potAfterSubmit.potDisplay
+            : null;
+      const successBody = formatPotPayoutSuccessMessage(claimTarget.sessionId, potLineResolved);
+      const notYetLogged = !readStringIdSet(PAYOUT_DONE_IDS_KEY).has(claimTarget.sessionId);
+      setActionState({
+        kind: "success",
+        message: payoutHash ? successBody : `${successBody} Transaction link pending — refresh in a moment.`,
+        txHash: payoutHash ?? tx.hash,
+        steps: completeFlowSteps(CLAIM_STEP_DEFS),
+      });
+      if (notYetLogged) {
+        pushEventLog(successBody, "success", payoutHash ?? tx.hash ?? undefined);
+      }
+      markPayoutSessionCompletedInStorage(claimTarget.sessionId);
     } catch (error) {
       const err = error as { code?: string; message?: string; shortMessage?: string };
       const isRevert =
@@ -2272,16 +2790,57 @@ function App() {
         err?.shortMessage?.toLowerCase().includes("reverted");
 
       if (isRevert) {
-        const fresh = await refreshGameState();
-        if (fresh?.claimed) {
+        const fresh = await refreshGameState(true, true);
+        const nowSec = Math.floor(Date.now() / 1000);
+        const attempted = claimAttemptTargetRef.current;
+        const dupForAttempted =
+          attempted &&
+          getDuplicateClaimTargetForWalletSession(fresh, walletState.address, attempted.sessionId, nowSec);
+        const anyWalletClaimInFlight =
+          hasCurrentClaimInFlight(fresh, walletState.address, nowSec) ||
+          Boolean(getPendingClaimRequestedSession(fresh, walletState.address));
+        if (dupForAttempted) {
+          const potInf = potInfoForClaimTarget(fresh, dupForAttempted);
           const payoutHash = await fetchPayoutTxHash(
-            fresh.lastPlayerAddress ?? walletState.address ?? null,
+            walletState.address ?? null,
+            potInf ? BigInt(potInf.potRaw) : null,
+          );
+          const sid = dupForAttempted.sessionId;
+          const potLine = potInf ? `${potInf.potDisplay} USDC` : "USDC";
+          const msg = potInf
+            ? `Game #${sid}: Already claimed (${potLine}). Waiting for relayer payout…`
+                + (payoutHash ? " Payout tx linked below." : "")
+            : "Claim recorded. Waiting for relayer payout…" + (payoutHash ? " Payout tx linked below." : "");
+          setActionState({
+            kind: "pending",
+            message: msg,
+            txHash: payoutHash ?? undefined,
+          });
+        } else if (attempted && anyWalletClaimInFlight) {
+          const sid = attempted.sessionId;
+          setActionState({
+            kind: "error",
+            message: `Could not submit claim for game #${sid} (transaction reverted). Another payout may still be in progress — wait and try again.`,
+          });
+        } else if (anyWalletClaimInFlight) {
+          const pendingInf = getPendingClaimRequestedSession(fresh, walletState.address);
+          const curTarget =
+            pendingInf ??
+            (hasCurrentClaimInFlight(fresh, walletState.address, nowSec)
+              ? {
+                  sessionId: fresh!.currentSessionId,
+                  source: "current" as const,
+                  winnerAddress: fresh!.lastPlayerAddress,
+                }
+              : null);
+          const potInf = curTarget ? potInfoForClaimTarget(fresh, curTarget) : null;
+          const payoutHash = await fetchPayoutTxHash(
+            walletState.address ?? null,
+            potInf ? BigInt(potInf.potRaw) : null,
           );
           setActionState({
-            kind: "success",
-            message:
-              "Already claimed. Winnings went to the last player."
-              + (payoutHash ? " See payout transaction below." : ""),
+            kind: "pending",
+            message: "Claim recorded. Waiting for relayer payout…" + (payoutHash ? " Payout tx linked below." : ""),
             txHash: payoutHash ?? undefined,
           });
         } else {
@@ -2298,7 +2857,8 @@ function App() {
         setActionState({ kind: "error", message: formatGatewayError(error, "claim") });
       }
     } finally {
-      setIsClaiming(false);
+      setClaimingForSessionId(null);
+      claimAttemptTargetRef.current = null;
     }
   }
 
@@ -2313,7 +2873,7 @@ function App() {
     setIsStartingSession(true);
     setActionState({
       kind: "pending",
-      message: "Confirm the new game session in your wallet to start a round on Tezlink.",
+      message: "Confirm the new game in your wallet to start a round on the Michelson-interface.",
       steps: markFlowSteps(START_SESSION_STEP_DEFS, "wallet_start"),
     });
     try {
@@ -2343,7 +2903,7 @@ function App() {
       }
       setActionState({
         kind: "pending",
-        message: "Confirm the new game session in your wallet to start a round on Tezlink.",
+        message: "Confirm the new game in your wallet to start a round on the Michelson-interface.",
         steps: markFlowSteps(START_SESSION_STEP_DEFS, "wallet_start"),
       });
       const sessionProvider = new ethers.BrowserProvider(ethereum);
@@ -2358,7 +2918,7 @@ function App() {
       );
       setActionState({
         kind: "pending",
-        message: `Waiting for your new game session transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
+        message: `Waiting for your new game transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
         steps: markFlowSteps(START_SESSION_STEP_DEFS, "evm_start"),
         txHash: tx.hash,
       });
@@ -2368,14 +2928,14 @@ function App() {
         leaveStartingSessionFlag = true;
         setActionState({
           kind: "pending",
-          message: "Round created on Tezlink. Syncing game state…",
+          message: "Round created on the Michelson-interface. Syncing game state…",
           txHash: tx.hash,
           steps: completeFlowSteps(START_SESSION_STEP_DEFS),
         });
       } else {
         setActionState({
           kind: "success",
-          message: `New session started (${DEFAULT_SESSION_DURATION_SEC / 60} min). Click Play to deposit ${CONFIG.pressAmount} USDC into the pot.`,
+          message: `New game started (${DEFAULT_SESSION_DURATION_SEC / 60} min). Click Play to deposit ${CONFIG.pressAmount} USDC into the pot.`,
           txHash: tx.hash,
           steps: completeFlowSteps(START_SESSION_STEP_DEFS),
         });
@@ -2390,7 +2950,7 @@ function App() {
       setActionState({
         kind: "error",
         message: isRevert
-          ? `Could not start a new session. Refresh, check you are on ${TEZOSX_EVM_TESTNET_NAME}, and try again.`
+          ? `Could not start a new game. Refresh, check you are on ${TEZOSX_EVM_TESTNET_NAME}, and try again.`
           : formatGatewayError(error, "start_session"),
       });
       return false;
@@ -2433,6 +2993,12 @@ function App() {
     setShellView("game");
   }, []);
 
+  const goToSessions = useCallback(() => {
+    setWalletMenuOpen(false);
+    setTourOpen(false);
+    setShellView("sessions");
+  }, []);
+
   const openTourFromGame = useCallback(() => {
     setWalletMenuOpen(false);
     setTourStep(0);
@@ -2465,14 +3031,15 @@ function App() {
           setActionState({
             kind: "error",
             message:
-              "New session was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
+              "New game was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
           });
           return;
         }
         setActionState({
           kind: "pending",
-          message: `Round ready. Confirm your ${CONFIG.pressAmount} USDC deposit into the EVM escrow.`,
+          message: `Game ready. Confirm your ${CONFIG.pressAmount} USDC deposit into the EVM escrow.`,
         });
+        skipMichelsonLoadingStatusAfterGameReadyRef.current = true;
         await pressButton();
       } finally {
         setIsStartingSession(false);
@@ -2492,14 +3059,15 @@ function App() {
           setActionState({
             kind: "error",
             message:
-              "New session was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
+              "New game was started, but Michelson-interface storage has not caught up yet. Wait a few seconds and press Play again.",
           });
           return;
         }
         setActionState({
           kind: "pending",
-          message: `Round ready. Confirm your ${CONFIG.pressAmount} USDC deposit into the EVM escrow.`,
+          message: `Game ready. Confirm your ${CONFIG.pressAmount} USDC deposit into the EVM escrow.`,
         });
+        skipMichelsonLoadingStatusAfterGameReadyRef.current = true;
         await pressButton();
       } finally {
         setIsStartingSession(false);
@@ -2529,7 +3097,7 @@ function App() {
       case "won":
         return { label: "Play", sub: null };
     }
-  }, [potUiState, CONFIG.pressAmount, walletState.address, gameState?.lastPlayerAddress]);
+  }, [potUiState, walletState.address, gameState]);
 
   const potProgressShown =
     potUiState === "play" || potUiState === "depositing" ? potRingProgress : null;
@@ -2584,7 +3152,7 @@ function App() {
               </h1>
               <p className="landing-blurb">
                 <PotzLuckMark /> is a simple game that helps you understand the power of NAC on Tezos X. You deposit
-                into a pot on the EVM interface and watch game state update on the Tezlink interface without switching
+                into a pot on the EVM interface and watch game state update on the Michelson-interface without switching
                 context. The last player to deposit when the game ends wins.
               </p>
               <div className="landing-cta">
@@ -2664,16 +3232,16 @@ function App() {
 
           <main className="sessions-page">
             <section className="sessions-hero">
-              <h1>Sessions</h1>
-              <p>Review the most recent completed rounds and claim the current winning round when you are eligible.</p>
+              <h1>Games</h1>
+              <p>Review every Michelson-interface game that is still unresolved and claim the rounds your connected wallet won.</p>
             </section>
 
             <section className="sessions-claim-card">
               <div className="sessions-card-head">
-                <h2>Current round claim</h2>
+                <h2>Current game claim</h2>
                 <span className={`session-state ${sessionActive ? "active" : ""}`}>
                   <span className="dot" />
-                  {sessionActive ? "Session active" : "No active session"}
+                  {sessionActive ? "Game active" : "No active game"}
                 </span>
               </div>
               <div className="sessions-claim-grid">
@@ -2692,50 +3260,76 @@ function App() {
                   <div className="stat-v">{sessionLabel}</div>
                 </div>
               </div>
-              {canClaim ? (
+              {canShowClaimCurrentRoundButton ? (
                 <button
                   type="button"
                   className="btn primary"
                   onClick={() => void claimContract()}
-                  disabled={!canClaim}
+                  disabled={claimInProgressForCurrentRoundButton}
                 >
-                  {isClaiming ? "Claiming..." : "Claim Winnings"}
+                  {claimInProgressForCurrentRoundButton ? "Claiming..." : "Claim Winnings"}
                 </button>
               ) : (
                 <p className="side-note">
-                  {sessionActive
-                    ? "The current round is still active."
-                    : "The claim button only becomes available to the current winning wallet for the current on-chain round."}
+                  {canClaim && claimTargetSession?.source === "pending"
+                    ? "You have a claim on an earlier game — use Claim next to that game below."
+                    : sessionActive
+                      ? "The current round is still active."
+                      : "The claim button here is for the current round once it ends. Use the list below for earlier games."}
                 </p>
               )}
             </section>
 
             <section className="sessions-list-card">
               <div className="sessions-card-head">
-                <h2>Last 10 completed sessions</h2>
+                <h2>All unclaimed games</h2>
               </div>
-              {recentSessions.length > 0 ? (
+              {unresolvedSessions.length > 0 ? (
                 <div className="sessions-list">
-                  {recentSessions.map((session) => (
-                    <article key={`${session.sessionId}-${session.txHash ?? "nohash"}`} className="sessions-list-item">
+                  {unresolvedSessions.map((session) => {
+                    const winnerMatches = addressesEqual(session.winnerAddress, walletState.address);
+                    return (
+                    <article key={session.sessionId} className="sessions-list-item">
                       <div className="sessions-list-top">
-                        <strong>Session #{session.sessionId}</strong>
+                        <strong>Game #{session.sessionId}</strong>
                         <span>{session.potDisplay} USDC</span>
                       </div>
-                      <div className="sessions-list-mid">Winner: {shortAddr(session.winner)}</div>
+                      <div className="sessions-list-mid">
+                        <span className="session-winner-label">Winner</span>
+                        <span className="session-winner-value">
+                          {session.winnerAddress ? shortAddr(session.winnerAddress) : (session.winnerTezos ?? "—")}
+                        </span>
+                      </div>
                       <div className="sessions-list-bottom">
-                        <span>{formatEndedAgo(Math.max(0, Math.floor(Date.now() / 1000) - session.paidOutAt))}</span>
-                        {session.txHash ? (
-                          <a href={evmTxUrl(session.txHash)} target="_blank" rel="noreferrer">
-                            View payout
-                          </a>
-                        ) : null}
+                        <span>
+                          {session.claimRequested
+                            ? "Processing"
+                            : `Ended ${formatEndedAgo(Math.max(0, Math.floor(Date.now() / 1000) - session.sessionEnd))}`}
+                        </span>
+                        {winnerMatches && !session.claimRequested && michelsonPotHasFunds(session.potRaw) ? (
+                          <button
+                            type="button"
+                            className="btn primary sm"
+                            onClick={() => void claimContract(session.sessionId)}
+                            disabled={claimingForSessionId === session.sessionId}
+                          >
+                            {claimingForSessionId === session.sessionId ? "Claiming..." : "Claim"}
+                          </button>
+                        ) : (
+                          <span className="sessions-list-status">
+                            {!winnerMatches
+                              ? "Not your game"
+                              : session.claimRequested
+                                ? "Processing"
+                                : "No pot"}
+                          </span>
+                        )}
                       </div>
                     </article>
-                  ))}
+                  )})}
                 </div>
               ) : (
-                <p className="side-note">No completed sessions yet.</p>
+                <p className="side-note">No unresolved games right now.</p>
               )}
             </section>
           </main>
@@ -2827,7 +3421,7 @@ function App() {
           <div className="game-layout">
             <aside className="game-stats">
               <div className="stat-row hero">
-                <div className="stat-l">{sessionActive ? "Pot size" : "Pot size was"}</div>
+                <div className="stat-l">{potSidebarLabel}</div>
                 <div className="stat-v hero-v">
                   <b>{gameState ? gameState.potDisplay : "—"}</b> <span>USDC</span>
                 </div>
@@ -2840,44 +3434,74 @@ function App() {
                 <div className="stat-l">Game ends</div>
                 <div className="stat-v">{sessionLabel}</div>
               </div>
-              {canClaim ? (
+              {canShowClaimCurrentRoundButton ? (
                 <button
                   type="button"
                   className="btn primary sm claim-under-ends"
                   onClick={() => void claimContract()}
-                  disabled={!canClaim}
+                  disabled={claimInProgressForCurrentRoundButton}
                 >
-                  {isClaiming ? "Claiming..." : "Claim Winnings"}
+                  {claimInProgressForCurrentRoundButton ? "Claiming..." : "Claim Winnings"}
                 </button>
               ) : null}
               <div className={`session-state ${sessionActive ? "active" : ""}`}>
                 <span className="dot" />
-                {sessionActive ? "Session active" : "No active session"}
+                {sessionActive ? "Game active" : "No active game"}
               </div>
               <div className="session-history">
-                <div className="session-history-h">Recent completed sessions</div>
-                {recentSessions.length > 0 ? (
+                <div className="session-history-head">
+                  <h3 className="session-history-h">Recent games</h3>
+                  <RecentSessionsClaimInfo walletConnected={Boolean(walletState.address)} />
+                </div>
+                {sidebarPendingSessions.length > 0 ? (
                   <div className="session-history-list">
-                    {recentSessions.map((session) => (
-                      <div key={`${session.sessionId}-${session.txHash ?? "nohash"}`} className="session-history-item">
+                    {sidebarPendingSessions.map((session) => {
+                      const winnerMatches = addressesEqual(session.winnerAddress, walletState.address);
+                      return (
+                      <div key={session.sessionId} className="session-history-item">
                         <div className="session-history-top">
-                          <span>Session #{session.sessionId}</span>
+                          <span>Game #{session.sessionId}</span>
                           <span>{session.potDisplay} USDC</span>
                         </div>
                         <div className="session-history-bottom">
-                          <span>Winner: {shortAddr(session.winner)}</span>
-                          {session.txHash ? (
-                            <a href={evmTxUrl(session.txHash)} target="_blank" rel="noreferrer">
-                              View payout
-                            </a>
-                          ) : null}
+                          <span className="session-winner-block">
+                            <span className="session-winner-label">Winner</span>
+                            <span className="session-winner-value">
+                              {session.winnerAddress ? shortAddr(session.winnerAddress) : (session.winnerTezos ?? "—")}
+                            </span>
+                          </span>
+                          {winnerMatches && !session.claimRequested && michelsonPotHasFunds(session.potRaw) ? (
+                            <button
+                              type="button"
+                              className="btn primary sm session-history-claim"
+                              onClick={() => void claimContract(session.sessionId)}
+                              disabled={claimingForSessionId === session.sessionId}
+                            >
+                              {claimingForSessionId === session.sessionId ? "Claiming..." : "Claim"}
+                            </button>
+                          ) : (
+                            <span className="session-history-status">
+                              {session.claimRequested
+                                ? "Processing"
+                                : winnerMatches
+                                  ? michelsonPotHasFunds(session.potRaw)
+                                    ? "Yours"
+                                    : "No pot"
+                                  : "Unclaimed"}
+                            </span>
+                          )}
                         </div>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 ) : (
-                  <div className="session-history-empty">No completed sessions yet.</div>
+                  <div className="session-history-empty">No recent games yet.</div>
                 )}
+                {unresolvedSessions.length > 5 ? (
+                  <button type="button" className="session-history-link" onClick={goToSessions}>
+                    View all unclaimed games
+                  </button>
+                ) : null}
               </div>
             </aside>
 

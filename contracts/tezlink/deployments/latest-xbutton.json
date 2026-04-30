@@ -1,8 +1,8 @@
 {
-  "contract": "KT1RP4w7BHMH84WftzijUKwzjoTXsN4iARBN",
-  "operationHash": "oo4ChoqYKYdFB9tqyhseLJ8Q4yJRcgU2hvKVhGqrg4D5JBANfSp",
-  "includedInBlock": "BMBpTpLE5eNLSmB7CWYiVj3CK5QvzqRvtkPcS72iAp71vosQRSr",
+  "contract": "KT1JKKK8tgWSsfz9yVxmffSEVahvSzncvvKZ",
+  "operationHash": "ontA77PKHsJxzPvTaXm3CLEdqYMfC7bXXJ3pNTKkM84vEKDhBhE",
+  "includedInBlock": "BLRuUixHXbJ15JVf2p4tuxWTVAjKvUdGFKjWNAJJd9QGsqguHu5",
   "endpoint": "https://demo.txpark.nomadic-labs.com/rpc/tezlink",
-  "originatedAt": "2026-04-28T12:37:03Z",
-  "note": "octez-client could not save local alias in sandbox; contract is live on Tezlink."
+  "originatedAt": "2026-04-30T11:01:00Z",
+  "note": "Session-aware XButton contract with pending claimable sessions."
 }
