@@ -19,7 +19,11 @@ import {
 } from "./potzluckUi";
 import { evmNetworkDisplayName, stackShortLabel, walletAddNetworkHelpRabby } from "./tezosxNetwork";
 import { resolveFrontendContracts } from "./tezosxContractEnv";
-import { normalizeTezosXNetwork, TEZOSX_FRONTEND_PRESETS } from "./tezosxNetworkPresets";
+import {
+  buildNetworkInfoModalRows,
+  normalizeTezosXNetwork,
+  TEZOSX_FRONTEND_PRESETS,
+} from "./tezosxNetworkPresets";
 import { WalletPickerModal } from "./WalletPickerModal";
 import {
   clearSavedWalletRdns,
@@ -115,21 +119,6 @@ const TEZOSX_EVM_DISPLAY_NAME = evmNetworkDisplayName(CONFIG.stack);
 const TEZOS_X_DASHBOARD_URL = tezosXPreset.dashboardUrl;
 const POTZ_DOCS_URL = import.meta.env.VITE_DOCS_URL ?? "https://tezos.com/tezos-x/";
 const TEZLINK_SITE_URL = import.meta.env.VITE_TEZLINK_SITE_URL ?? "https://tezlink.tezos.com/";
-const NETWORK_INFO = {
-  networkDisplayName: TEZOSX_EVM_DISPLAY_NAME,
-  deployedBy: "foucaultaurelien",
-  created: "2026-04-22 10:19:00 UTC",
-  evmNodeVersion: "649d7e6a",
-  rpcEndpoint: CONFIG.evmRpc,
-  tezlinkEndpoint: CONFIG.tezlinkRpc,
-  smartRollupNode:
-    CONFIG.stack === "testnet" ? "https://demo.txpark.nomadic-labs.com/rollup" : "—",
-  chainId: `${CONFIG.chainId} (0x${CONFIG.chainId.toString(16)})`,
-  rollupAddress: CONFIG.stack === "testnet" ? "sr1HHiXgJf4WBRBLzQ61ybLDbz5C5p3FeNzA" : "—",
-  smartRollupNodeConfig:
-    CONFIG.stack === "testnet" ? "https://demo.txpark.nomadic-labs.com/rollup/config" : "—",
-  dashboardUrl: TEZOS_X_DASHBOARD_URL,
-} as const;
 
 function airdropDeliveredLogMessage(usdc: boolean, xtz: boolean): string {
   const net = stackShortLabel(CONFIG.stack);
@@ -688,15 +677,15 @@ const START_SESSION_STEP_DEFS: FlowStepDef[] = [
 function NetworkInfoModal(props: { open: boolean; onClose: () => void }) {
   if (!props.open) return null;
 
-  const rows = [
-    ["Network", NETWORK_INFO.networkDisplayName],
-    ["Created", NETWORK_INFO.created],
-    ["EVM Node Version", NETWORK_INFO.evmNodeVersion],
-    ["RPC Endpoint", NETWORK_INFO.rpcEndpoint],
-    ["Michelson-interface endpoint", NETWORK_INFO.tezlinkEndpoint],
-    ["Smart Rollup Node", NETWORK_INFO.smartRollupNode],
-    ["Chain ID", NETWORK_INFO.chainId],
-  ] as const;
+  const { rows, dashboardUrl } = buildNetworkInfoModalRows(CONFIG.stack, {
+    networkDisplayName: TEZOSX_EVM_DISPLAY_NAME,
+    evmRpc: CONFIG.evmRpc,
+    tezlinkRpc: CONFIG.tezlinkRpc,
+    chainId: CONFIG.chainId,
+    evmExplorerUrl: CONFIG.evmExplorerUrl,
+    tezosExplorerBase: CONFIG.tezosExplorerBase,
+    dashboardUrl: TEZOS_X_DASHBOARD_URL,
+  });
 
   return (
     <div className="tour-backdrop" onClick={props.onClose}>
@@ -719,7 +708,7 @@ function NetworkInfoModal(props: { open: boolean; onClose: () => void }) {
             ))}
           </div>
           <p className="network-info-link-wrap">
-            <a href={NETWORK_INFO.dashboardUrl} target="_blank" rel="noopener noreferrer" className="explorer-link">
+            <a href={dashboardUrl} target="_blank" rel="noopener noreferrer" className="explorer-link">
               Open network site
             </a>
           </p>
