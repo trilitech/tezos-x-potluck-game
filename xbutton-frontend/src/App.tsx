@@ -42,13 +42,28 @@ import {
 const tezosXStack = normalizeTezosXNetwork(import.meta.env.VITE_TEZOSX_NETWORK);
 const tezosXPreset = TEZOSX_FRONTEND_PRESETS[tezosXStack];
 
-const evmRpc = import.meta.env.VITE_EVM_RPC?.trim() || tezosXPreset.evmRpc;
-const tezlinkRpc = import.meta.env.VITE_TEZLINK_RPC?.trim() || tezosXPreset.tezlinkRpc;
+/** Previewnet: canonical URLs/chain from preset only (ignores stale testnet `VITE_*` overrides). */
+const evmRpc =
+  tezosXStack === "previewnet"
+    ? tezosXPreset.evmRpc
+    : import.meta.env.VITE_EVM_RPC?.trim() || tezosXPreset.evmRpc;
+const tezlinkRpc =
+  tezosXStack === "previewnet"
+    ? tezosXPreset.tezlinkRpc
+    : import.meta.env.VITE_TEZLINK_RPC?.trim() || tezosXPreset.tezlinkRpc;
 const evmExplorerUrl =
-  import.meta.env.VITE_EVM_EXPLORER_URL?.trim() || tezosXPreset.evmExplorerUrl;
+  tezosXStack === "previewnet"
+    ? tezosXPreset.evmExplorerUrl
+    : import.meta.env.VITE_EVM_EXPLORER_URL?.trim() || tezosXPreset.evmExplorerUrl;
 const tezosExplorerBase =
-  import.meta.env.VITE_TEZOS_EXPLORER_BASE?.trim() || tezosXPreset.tezosExplorerBase;
-const chainId = BigInt(import.meta.env.VITE_CHAIN_ID?.trim() || tezosXPreset.chainId);
+  tezosXStack === "previewnet"
+    ? tezosXPreset.tezosExplorerBase
+    : import.meta.env.VITE_TEZOS_EXPLORER_BASE?.trim() || tezosXPreset.tezosExplorerBase;
+const chainId = BigInt(
+  tezosXStack === "previewnet"
+    ? tezosXPreset.chainId
+    : import.meta.env.VITE_CHAIN_ID?.trim() || tezosXPreset.chainId,
+);
 const { usdc: usdcAddress, pot: potAddress, game: gameContract, crac: cracPrecompile } =
   resolveFrontendContracts(tezosXStack, import.meta.env);
 const usdcDecimals = Number(import.meta.env.VITE_USDC_DECIMALS ?? "6");
@@ -59,7 +74,10 @@ const gameStateWaitTimeoutMs = (() => {
   const n = Number(import.meta.env.VITE_GAME_STATE_WAIT_TIMEOUT_MS ?? "40000");
   return Number.isFinite(n) && n > 0 ? n : 40000;
 })();
-const faucetUrl = import.meta.env.VITE_FAUCET_URL?.trim() || tezosXPreset.faucetUrl;
+const faucetUrl =
+  tezosXStack === "previewnet"
+    ? tezosXPreset.faucetUrl
+    : import.meta.env.VITE_FAUCET_URL?.trim() || tezosXPreset.faucetUrl;
 const DEFAULT_AIRDROP_API_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/api/airdrop";
 const airdropApiUrl = import.meta.env.VITE_AIRDROP_API_URL?.trim() || DEFAULT_AIRDROP_API_URL;
 
@@ -84,13 +102,17 @@ const RELAYER_WALLET_KEY_PREFIX = "potzluck_relayer_wallet_v1";
 const RELAYER_XTZ_AIRDROP_KEY_PREFIX = "potzluck_relayer_xtz_airdrop_v1";
 
 const tzktApiUrl =
-  import.meta.env.VITE_TZKT_API_URL?.trim() ||
-  tezosXPreset.tzktApiUrl ||
-  tezlinkRpc.replace(/\/rpc\/tezlink\/?$/, "") + "/tzkt";
+  tezosXStack === "previewnet"
+    ? tezosXPreset.tzktApiUrl
+    : import.meta.env.VITE_TZKT_API_URL?.trim() ||
+      tezosXPreset.tzktApiUrl ||
+      tezlinkRpc.replace(/\/rpc\/tezlink\/?$/, "") + "/tzkt";
 
 /** Path segment for `{VITE_TEZOS_EXPLORER_BASE}/{path}/operations` (Michelson-interface tzkt). Defaults to game KT1; use rollup-style id if your explorer requires it. */
 const tezktGameOperationsPath =
-  import.meta.env.VITE_TEZKT_GAME_OPERATIONS_PATH?.trim() || gameContract;
+  tezosXStack === "previewnet"
+    ? gameContract
+    : import.meta.env.VITE_TEZKT_GAME_OPERATIONS_PATH?.trim() || gameContract;
 
 const CONFIG = {
   appName: "Pot(z)Luck",

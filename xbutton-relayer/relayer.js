@@ -48,8 +48,15 @@ function firstNonEmpty(...vals) {
   return undefined;
 }
 
-const EVM_RPC = process.env.EVM_RPC?.trim() || tezosXPreset.evmRpc;
-const TEZLINK_RPC = process.env.TEZLINK_RPC?.trim() || tezosXPreset.tezlinkRpc;
+/** Previewnet: preset RPCs only (ignore stale testnet `EVM_RPC` / `TEZLINK_RPC`). */
+const EVM_RPC =
+  tezosXStack === 'previewnet'
+    ? tezosXPreset.evmRpc
+    : process.env.EVM_RPC?.trim() || tezosXPreset.evmRpc;
+const TEZLINK_RPC =
+  tezosXStack === 'previewnet'
+    ? tezosXPreset.tezlinkRpc
+    : process.env.TEZLINK_RPC?.trim() || tezosXPreset.tezlinkRpc;
 const RELAYER_PRIVATE_KEY = process.env.RELAYER_PRIVATE_KEY;
 const POT_ADDRESS =
   tezosXStack === 'previewnet'
