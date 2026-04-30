@@ -96,7 +96,7 @@ const PASSIVE_CLAIM_WAIT_LOG_KEY_PREFIX = "potzluck_passive_claim_wait_v1_";
 /** EVM log scan depth when resolving PaidOut tx after claim (escrow → winner). */
 const PAYOUT_LOG_LOOKBACK_BLOCKS = 4000;
 const AIRDROP_USDC_AMOUNT = "5";
-const AIRDROP_XTZ_AMOUNT = "2";
+const AIRDROP_XTZ_AMOUNT = "1";
 const TEZOS_X_RELAYER_RDNS = "com.tezosx.relayer";
 const RELAYER_WALLET_KEY_PREFIX = "potzluck_relayer_wallet_v1";
 const RELAYER_XTZ_AIRDROP_KEY_PREFIX = "potzluck_relayer_xtz_airdrop_v1";
