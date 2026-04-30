@@ -96,7 +96,7 @@ const PASSIVE_CLAIM_WAIT_LOG_KEY_PREFIX = "potzluck_passive_claim_wait_v1_";
 /** EVM log scan depth when resolving PaidOut tx after claim (escrow → winner). */
 const PAYOUT_LOG_LOOKBACK_BLOCKS = 4000;
 const AIRDROP_USDC_AMOUNT = "5";
-const AIRDROP_XTZ_AMOUNT = "5";
+const AIRDROP_XTZ_AMOUNT = "2";
 const TEZOS_X_RELAYER_RDNS = "com.tezosx.relayer";
 const RELAYER_WALLET_KEY_PREFIX = "potzluck_relayer_wallet_v1";
 const RELAYER_XTZ_AIRDROP_KEY_PREFIX = "potzluck_relayer_xtz_airdrop_v1";
@@ -750,16 +750,16 @@ function AirdropModal(props: {
 
   const gotBoth = props.receivedUsdc && props.receivedXtz;
   const heading = gotBoth
-    ? `Boom! We Airdropped you ${AIRDROP_USDC_AMOUNT} USDC and XTZ.`
+    ? `Boom! We Airdropped you ${AIRDROP_USDC_AMOUNT} USDC and ${AIRDROP_XTZ_AMOUNT} XTZ.`
     : props.receivedUsdc
       ? `Boom! We Airdropped you ${AIRDROP_USDC_AMOUNT} USDC.`
       : `Boom! We Airdropped you ${AIRDROP_XTZ_AMOUNT} XTZ.`;
 
   const body = gotBoth
-    ? "We airdropped 5 USDC to play with and 5 XTZ for gas into your wallet on the EVM interface of Tezos X. You're ready to play."
+    ? `We airdropped ${AIRDROP_USDC_AMOUNT} USDC to play with and ${AIRDROP_XTZ_AMOUNT} XTZ for gas into your wallet on the EVM interface of Tezos X. You're ready to play.`
     : props.receivedUsdc
-      ? "We airdropped 5 USDC into your wallet so you can play on Tezos X."
-      : "We airdropped 5 XTZ into your wallet so you have gas to play on Tezos X.";
+      ? `We airdropped ${AIRDROP_USDC_AMOUNT} USDC into your wallet so you can play on Tezos X.`
+      : `We airdropped ${AIRDROP_XTZ_AMOUNT} XTZ into your wallet so you have gas to play on Tezos X.`;
 
   return (
     <div className="tour-backdrop" onClick={props.onDismiss}>
@@ -779,14 +779,14 @@ function AirdropModal(props: {
             {props.receivedUsdc ? (
               <div className="airdrop-card">
                 <div className="token"><span className="ic usdc">$</span> USDC</div>
-                <div className="amt">5.00</div>
+                <div className="amt">{Number(AIRDROP_USDC_AMOUNT).toFixed(2)}</div>
                 <div className="src">game token</div>
               </div>
             ) : null}
             {props.receivedXtz ? (
               <div className="airdrop-card">
                 <div className="token"><span className="ic xtz">ꜩ</span> XTZ</div>
-                <div className="amt">5.00</div>
+                <div className="amt">{Number(AIRDROP_XTZ_AMOUNT).toFixed(2)}</div>
                 <div className="src">gas token</div>
               </div>
             ) : null}
