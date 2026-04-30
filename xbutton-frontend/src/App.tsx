@@ -17,7 +17,7 @@ import {
   type EventLogEntry,
   type EventLogTone,
 } from "./potzluckUi";
-import { evmNetworkDisplayName } from "./tezosxNetwork";
+import { evmNetworkDisplayName, stackShortLabel, walletAddNetworkHelpRabby } from "./tezosxNetwork";
 import { resolveFrontendContracts } from "./tezosxContractEnv";
 import { normalizeTezosXNetwork, TEZOSX_FRONTEND_PRESETS } from "./tezosxNetworkPresets";
 import { WalletPickerModal } from "./WalletPickerModal";
@@ -79,14 +79,6 @@ const TEZOS_X_RELAYER_RDNS = "com.tezosx.relayer";
 const RELAYER_WALLET_KEY_PREFIX = "potzluck_relayer_wallet_v1";
 const RELAYER_XTZ_AIRDROP_KEY_PREFIX = "potzluck_relayer_xtz_airdrop_v1";
 
-function airdropDeliveredLogMessage(usdc: boolean, xtz: boolean): string {
-  if (usdc && xtz) {
-    return `Testnet airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC and ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
-  }
-  if (usdc) return `Testnet airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC sent to your wallet.`;
-  return `Testnet airdrop complete: ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
-}
-
 const tzktApiUrl =
   import.meta.env.VITE_TZKT_API_URL?.trim() ||
   tezosXPreset.tzktApiUrl ||
@@ -124,7 +116,7 @@ const TEZOS_X_DASHBOARD_URL = tezosXPreset.dashboardUrl;
 const POTZ_DOCS_URL = import.meta.env.VITE_DOCS_URL ?? "https://tezos.com/tezos-x/";
 const TEZLINK_SITE_URL = import.meta.env.VITE_TEZLINK_SITE_URL ?? "https://tezlink.tezos.com/";
 const NETWORK_INFO = {
-  testnetName: TEZOSX_EVM_DISPLAY_NAME,
+  networkDisplayName: TEZOSX_EVM_DISPLAY_NAME,
   deployedBy: "foucaultaurelien",
   created: "2026-04-22 10:19:00 UTC",
   evmNodeVersion: "649d7e6a",
@@ -138,6 +130,24 @@ const NETWORK_INFO = {
     CONFIG.stack === "testnet" ? "https://demo.txpark.nomadic-labs.com/rollup/config" : "—",
   dashboardUrl: TEZOS_X_DASHBOARD_URL,
 } as const;
+
+function airdropDeliveredLogMessage(usdc: boolean, xtz: boolean): string {
+  const net = stackShortLabel(CONFIG.stack);
+  if (usdc && xtz) {
+    return `${net} airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC and ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
+  }
+  if (usdc) return `${net} airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC sent to your wallet.`;
+  return `${net} airdrop complete: ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
+}
+
+function formatAirdropError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith("AIRDROP_FAILED:")) {
+    return message.replace("AIRDROP_FAILED:", "").trim() || "Airdrop failed.";
+  }
+  const net = stackShortLabel(CONFIG.stack);
+  return `We couldn't send ${net} funds right now. Please try again in a moment.`;
+}
 
 function evmTxUrl(hash: string) {
   const h = hash.startsWith("0x") ? hash : `0x${hash}`;
@@ -679,7 +689,7 @@ function NetworkInfoModal(props: { open: boolean; onClose: () => void }) {
   if (!props.open) return null;
 
   const rows = [
-    ["Network", NETWORK_INFO.testnetName],
+    ["Network", NETWORK_INFO.networkDisplayName],
     ["Created", NETWORK_INFO.created],
     ["EVM Node Version", NETWORK_INFO.evmNodeVersion],
     ["RPC Endpoint", NETWORK_INFO.rpcEndpoint],
@@ -1324,14 +1334,6 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
   return (e?.shortMessage ?? e?.message ?? (kind === "claim" ? "Claim failed." : "Start game failed.")).trim();
 }
 
-function formatAirdropError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (message.startsWith("AIRDROP_FAILED:")) {
-    return message.replace("AIRDROP_FAILED:", "").trim() || "Airdrop failed.";
-  }
-  return "We couldn't send testnet funds right now. Please try again in a moment.";
-}
-
 function PotzLuckMark() {
   return (
     <>
@@ -1862,8 +1864,8 @@ function App() {
     [refreshGameState],
   );
 
-  /** When already on TezosX EVM Testnet: top up USDC/XTZ via airdrop API if balances are zero. */
-  const ensureTestnetFundsIfNeeded = useCallback(
+  /** When already on the configured Tezos X EVM stack: top up USDC/XTZ via airdrop API if balances are zero. */
+  const ensureNetworkFundsIfNeeded = useCallback(
     async (wallet: WalletState): Promise<{ willAirdrop: boolean; needsUsdc: boolean; needsXtz: boolean }> => {
       if (!wallet.address || wallet.chainId !== CONFIG.chainId) {
         return { willAirdrop: false, needsUsdc: false, needsXtz: false };
@@ -1881,7 +1883,7 @@ function App() {
       }
       setActionState({
         kind: "pending",
-        message: "Your wallet needs testnet USDC or XTZ — requesting an airdrop…",
+        message: `Your wallet needs ${stackShortLabel(CONFIG.stack)} USDC or XTZ — requesting an airdrop…`,
       });
       await requestAirdrop(wallet.address, {
         xtz: needsXtzAirdrop,
@@ -1899,7 +1901,7 @@ function App() {
       });
       return { willAirdrop: true, needsUsdc: needsUsdcAirdrop, needsXtz: needsXtzAirdrop };
     },
-    [refreshWalletState, pushEventLog],
+    [refreshWalletState, pushEventLog, CONFIG.stack],
   );
 
   useEffect(() => {
@@ -2038,7 +2040,7 @@ function App() {
       markRelayerWallet(connectedWallet.address, connectedWallet.chainId);
     }
 
-    const funded = await ensureTestnetFundsIfNeeded(connectedWallet);
+    const funded = await ensureNetworkFundsIfNeeded(connectedWallet);
     const { willAirdrop } = funded;
 
     const wAfterFunds = await refreshWalletUntilPlayBalancesVisible(willAirdrop, () => refreshWalletState(false));
@@ -2059,13 +2061,13 @@ function App() {
     if (insufficientMsg) {
       pushEventLog(insufficientMsg, "error");
       pushEventLog(
-        `You can get testnet funds at ${faucetUrl.replace(/\/$/, "")} or reconnect after acquiring USDC and XTZ for this network.`,
+        `You can get ${stackShortLabel(CONFIG.stack)} funds at ${faucetUrl.replace(/\/$/, "")} or reconnect after acquiring USDC and XTZ for this network.`,
         "info",
       );
     } else {
       pushEventLog(
         willAirdrop
-          ? "Testnet funds are in your wallet. Click Play when you are ready to start or join a game."
+          ? `${stackShortLabel(CONFIG.stack)} funds are in your wallet. Click Play when you are ready to start or join a game.`
           : "Wallet connected on Tezos X. Click Play when you are ready to deposit or start a new game.",
         "info",
       );
@@ -2173,10 +2175,10 @@ function App() {
       markRelayerWallet(w.address, w.chainId);
     }
     pushEventLog(
-      `${TEZOSX_EVM_DISPLAY_NAME} is now selected in your wallet — checking balances for testnet funds…`,
+      `${TEZOSX_EVM_DISPLAY_NAME} is now selected in your wallet — checking balances for ${stackShortLabel(CONFIG.stack)} funds…`,
       "info",
     );
-    const { willAirdrop } = await ensureTestnetFundsIfNeeded(w);
+    const { willAirdrop } = await ensureNetworkFundsIfNeeded(w);
     const wAfterFunds = await refreshWalletUntilPlayBalancesVisible(willAirdrop, () => refreshWalletState(false));
     let insufficientMsg = getInsufficientPlayFundsEventLogMessage(wAfterFunds);
     if (willAirdrop && insufficientMsg) {
@@ -2194,13 +2196,13 @@ function App() {
     if (insufficientMsg) {
       pushEventLog(insufficientMsg, "error");
       pushEventLog(
-        `You can get testnet funds at ${faucetUrl.replace(/\/$/, "")} or reconnect after acquiring USDC and XTZ for this network.`,
+        `You can get ${stackShortLabel(CONFIG.stack)} funds at ${faucetUrl.replace(/\/$/, "")} or reconnect after acquiring USDC and XTZ for this network.`,
         "info",
       );
     } else {
       pushEventLog(
         willAirdrop
-          ? "Testnet funds are in your wallet. Click Play when you are ready to start or join a game."
+          ? `${stackShortLabel(CONFIG.stack)} funds are in your wallet. Click Play when you are ready to start or join a game.`
           : `Network ready on ${TEZOSX_EVM_DISPLAY_NAME}. Click Play when you are ready to deposit or start a new game.`,
         "info",
       );
@@ -2294,7 +2296,7 @@ function App() {
           const detail =
             addOrSwitchErr instanceof Error ? addOrSwitchErr.message : String(addOrSwitchErr);
           pushEventLog(
-            `Could not add ${TEZOSX_EVM_DISPLAY_NAME} in your wallet. In Rabby, ensure “Custom network” / testnets are enabled, add the RPC from Network information, then try again. ${detail}`,
+            `Could not add ${TEZOSX_EVM_DISPLAY_NAME} in your wallet. In Rabby, ${walletAddNetworkHelpRabby(CONFIG.stack)}, then try again. ${detail}`,
             "error",
           );
           return false;
@@ -2437,9 +2439,9 @@ function App() {
         try {
           setActionState({
             kind: "pending",
-            message: "You need testnet funds to play — we’re airdropping your wallet now…",
+            message: `You need ${stackShortLabel(CONFIG.stack)} funds to play — we’re airdropping your wallet now…`,
           });
-          const { willAirdrop } = await ensureTestnetFundsIfNeeded(latestWallet);
+          const { willAirdrop } = await ensureNetworkFundsIfNeeded(latestWallet);
           const fundedWallet = await refreshWalletUntilPlayBalancesVisible(
             willAirdrop,
             () => refreshWalletState(false),
