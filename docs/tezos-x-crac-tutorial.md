@@ -144,11 +144,11 @@ You need the `KT1` address before you deploy the Solidity contract’s construct
 
 ### A.2 Write the contract in SmartPy
 
-We keep the example small, but we add `**decrement`** so the EVM side is not only repeating “add one” while Michelson already did the same story. `**reset**` is still there so you can run the demo many times.
+Small counter with **`decrement`** (so the EVM flow is not only “add one”) and **`reset`** to re-run the demo. Storage is one int starting at **`0`**.
 
-Write the contract in SmartPy, then use the SmartPy IDE to compile and deploy it. Storage is still just a single counter that starts at `**0**`, so you read one value in the explorer.
+In the **[SmartPy IDE](https://smartpy.io/ide)**, replace the default template with:
 
-**Source — save as `counter-nac-tutorial.py`:**
+**Contract**
 
 ```python
 import smartpy as sp  # type: ignore
@@ -199,15 +199,15 @@ if "main" in __name__:
         c.decrement(_valid=False, _exception="at zero")
 ```
 
-In the next step, you will paste this contract into the SmartPy IDE, run it, and deploy it to the Michelson side of Tezos X.
+Click **Run**, then originate on the Tezos X network (**A.4**).
 
-**What does this contract do?**
+**Entrypoints**
 
-- calling `**increment`** with `Unit`: increases storage by 1.
-- calling `**decrement**` with `Unit`: decreases storage by 1, unless it is already 0, in which case it fails with `"at zero"`.
-- calling `**reset**` with `Unit`: sets storage back to 0.
+- **`increment`**: +1.
+- **`decrement`**: −1, fails at 0 with `"at zero"`.
+- **`reset`**: storage → 0.
 
-Those names are the Michelson entrypoints your Solidity contract will call through the gateway (`"increment"`, `"decrement"`, and `"reset"`).
+Solidity will call these through the gateway as `"increment"`, `"decrement"`, and `"reset"`.
 
 ### A.3 Connect Temple
 
@@ -218,10 +218,10 @@ Those names are the Michelson entrypoints your Solidity contract will call throu
 
 ### A.4 Deploy the SmartPy contract from the SmartPy IDE
 
-The easiest way to deploy this tutorial contract is with the SmartPy IDE, which is available at [smartpy.io/ide](https://smartpy.io/ide). It is a web-based IDE for Tezos contracts written in SmartPy, and if you have used Remix for Solidity before, the workflow should feel familiar.
+Deploy from [smartpy.io/ide](https://smartpy.io/ide) (same flow as Remix: edit → Run → Deploy).
 
 1. Open [smartpy.io/ide](https://smartpy.io/ide).
-2. Replace the default contract in the editor with the `**counter-nac-tutorial.py**` contract from section A.2.
+2. Editor should contain the **A.2** contract.
 3. Click `**Run**` to make sure the contract compiles successfully.
 4. Click `**Deploy Contract**`, then click `**Continue**`.
 5. In the deploy form, either paste the **Tezos X Tezlink RPC** value from earlier into the `**Node**` and `**Network**` input fields, or select `**Tezos X Previewnet**` from the network dropdown if it is already listed in the IDE.
@@ -318,11 +318,13 @@ contract EvmToMichelsonCounter {
 
 ### B.3 Deploying the Solidity contract
 
-Deploy this contract as you would deploy any Solidity contract on an EVM testnet.
+Deploy **`EvmToMichelsonCounter`** from **[Remix](https://remix.ethereum.org)** the way you would any other EVM testnet contract (this doc does not spell out Remix steps).
 
-The constructor needs one value:
+**Network:** use the **Tezos X EVM** RPC and chain ID from the official doc / the table at the top of this tutorial. Your wallet—and Remix’s selected environment—must be on that network before you deploy.
 
-- the `KT1` address string of the Michelson counter you originated in Part A (for example `"KT1…"`)
+**Constructor:** one argument, the Michelson counter `KT1` string from Part A (e.g. `"KT1…"`).
+
+You can deploy the same bytecode **locally** (Hardhat, Foundry, etc.) instead of Remix if you prefer; keep the same network and constructor argument.
 
 ### B.4 Calling `increment()` from your EVM wallet
 

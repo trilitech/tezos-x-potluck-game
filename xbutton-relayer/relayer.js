@@ -1,7 +1,12 @@
 import 'dotenv/config';
 import { createHash } from 'crypto';
+import fs from 'fs/promises';
 import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { ethers } from 'ethers';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const {
   EVM_RPC,
@@ -27,6 +32,8 @@ const POLL_INTERVAL_MS = 5000;
 const VERBOSE_POLL = /^1|true|yes$/i.test(String(process.env.RELAYER_VERBOSE_POLL ?? ''));
 /** Log claim/payout scan details (storage snapshot, payout attempts, errors). */
 const VERBOSE_CLAIM = /^1|true|yes$/i.test(String(process.env.RELAYER_VERBOSE_CLAIM ?? ''));
+/** Log each Deposited → record_deposit handoff (keys, CRAC tx hash). */
+const VERBOSE_DEPOSIT = /^1|true|yes$/i.test(String(process.env.RELAYER_VERBOSE_DEPOSIT ?? ''));
 
 const escrowAbi = [
   'event Deposited(address indexed player, uint256 amount)',
@@ -41,14 +48,55 @@ const escrow = new ethers.Contract(POT_ADDRESS, escrowAbi, provider);
 const escrowWithWallet = new ethers.Contract(POT_ADDRESS, escrowAbi, wallet);
 const gateway = new ethers.Contract(CRAC_PRECOMPILE, gatewayAbi, wallet);
 
-const processed = new Set();
+/** Dedup Deposited logs across restarts — see `loadProcessedDeposits()` / `markDepositProcessed()`. */
+let processedDeposits = new Set();
+
+const PROCESSED_DEPOSITS_PATH = process.env.RELAYER_PROCESSED_DEPOSITS_PATH
+  ? path.resolve(process.env.RELAYER_PROCESSED_DEPOSITS_PATH)
+  : path.join(__dirname, '.relayer-processed-deposits');
+const MAX_PERSISTED_DEPOSIT_KEYS = 10_000;
 
 // Gas limit for CRAC callMichelson — set above observed worst-case (record_deposit: ~2.05M).
 const CRAC_GAS_LIMIT = 3_000_000n;
 
-// ---------------------------------------------------------------------------
-// Tezlink storage fetch and parse
-// ---------------------------------------------------------------------------
+function depositedLogDedupKey(log) {
+  return `${log.transactionHash}:${log.index}`;
+}
+
+/**
+ * Persist Deposited log keys so a restart does not replay the same event into record_deposit
+ * (in-memory dedup alone + START_BLOCK_LOOKBACK caused double Michelson increments).
+ */
+async function loadProcessedDeposits() {
+  try {
+    const text = await fs.readFile(PROCESSED_DEPOSITS_PATH, 'utf8');
+    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (lines.length > MAX_PERSISTED_DEPOSIT_KEYS) {
+      const tail = lines.slice(-MAX_PERSISTED_DEPOSIT_KEYS);
+      await fs.writeFile(PROCESSED_DEPOSITS_PATH, tail.join('\n') + '\n', 'utf8');
+      console.warn('[relayer] trimmed processed deposits file to last', MAX_PERSISTED_DEPOSIT_KEYS, 'keys');
+      return new Set(tail);
+    }
+    return new Set(lines);
+  } catch (err) {
+    if (err.code === 'ENOENT') return new Set();
+    console.error('[relayer] Failed to load processed deposits file:', err.message);
+    throw err;
+  }
+}
+
+async function markDepositProcessed(key) {
+  try {
+    await fs.appendFile(PROCESSED_DEPOSITS_PATH, `${key}\n`, 'utf8');
+  } catch (persistErr) {
+    console.error('[relayer] CRITICAL: record_deposit confirmed but dedup ledger write failed — restart may replay this Deposited log', {
+      dedupKey: key,
+      file: PROCESSED_DEPOSITS_PATH,
+      err: persistErr?.message ?? String(persistErr),
+    });
+  }
+  processedDeposits.add(key);
+}
 
 async function fetchStorage() {
   const response = await fetch(tezlinkStorageUrl);
@@ -636,10 +684,28 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function confirmCracTx(txResponse, context) {
+  try {
+    return await txResponse.wait();
+  } catch (waitErr) {
+    const hash = txResponse.hash;
+    const receipt = await provider.getTransactionReceipt(hash).catch(() => null);
+    if (receipt?.status === 1) {
+      console.warn('[relayer] CRAC tx.wait() failed but receipt is success — treating as confirmed', {
+        hash,
+        ...context,
+      });
+      return receipt;
+    }
+    throw waitErr;
+  }
+}
+
 async function processDeposited(log) {
-  const key = `${log.transactionHash}:${log.index}`;
-  if (processed.has(key)) return;
-  processed.add(key);
+  const key = depositedLogDedupKey(log);
+  if (processedDeposits.has(key)) {
+    return;
+  }
 
   const parsed = escrow.interface.parseLog(log);
   const { player, amount } = parsed.args;
@@ -652,13 +718,31 @@ async function processDeposited(log) {
     }
     const tezosAddr = await rpcEthereumToTezos(player);
     const encodedBytes = encodeRecordDeposit(currentSessionId, tezosAddr, player, amount);
-    const tx = await gateway.callMichelson(
+    const txResponse = await gateway.callMichelson(
       GAME_KT1,
       'record_deposit',
       encodedBytes,
       { gasLimit: CRAC_GAS_LIMIT }
     );
-    await tx.wait();
+    if (VERBOSE_DEPOSIT) {
+      console.log('[relayer] record_deposit submitted', {
+        dedupKey: key,
+        depositTxHash: log.transactionHash,
+        logIndex: log.index,
+        cracTxHash: txResponse.hash,
+        player,
+        amount: amount.toString(),
+      });
+    }
+    const receipt = await confirmCracTx(txResponse, { dedupKey: key, entrypoint: 'record_deposit' });
+    if (receipt.status !== 1) {
+      throw new Error(`record_deposit receipt status=${receipt.status}`);
+    }
+    await markDepositProcessed(key);
+    if (VERBOSE_DEPOSIT) {
+      const cracHash = receipt.hash ?? receipt.transactionHash;
+      console.log('[relayer] record_deposit confirmed', { dedupKey: key, cracTxHash: cracHash });
+    }
   } catch (err) {
     const msg = err?.shortMessage ?? err?.message ?? String(err);
     if (msg.includes('tez_getEthereumTezosAddress') || msg.includes('tez_get')) {
@@ -714,10 +798,17 @@ async function pollDeposits() {
 }
 
 async function main() {
-  console.log(
-    '[relayer] started',
-    { wallet: wallet.address, pot: POT_ADDRESS, game: GAME_KT1, tezlinkStorage: tezlinkStorageUrl, verbosePoll: VERBOSE_POLL },
-  );
+  processedDeposits = await loadProcessedDeposits();
+
+  console.log('[relayer] started', {
+    wallet: wallet.address,
+    pot: POT_ADDRESS,
+    game: GAME_KT1,
+    tezlinkStorage: tezlinkStorageUrl,
+    verbosePoll: VERBOSE_POLL,
+    processedDepositDedupKeys: processedDeposits.size,
+    processedDepositsFile: PROCESSED_DEPOSITS_PATH,
+  });
 
   await pollDeposits();
 }

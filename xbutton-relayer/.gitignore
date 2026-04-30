@@ -1,0 +1,3 @@
+# Persisted dedup ledger for Deposited → record_deposit (see relayer.js)
+.relayer-processed-deposits
+node_modules/
