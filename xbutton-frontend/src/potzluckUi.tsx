@@ -1,5 +1,4 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type AnimationEvent, type ReactNode } from "react";
-import { TEZOSX_EVM_TESTNET_NAME } from "./tezosxNetwork";
 
 export function shortAddr(addr: string | null): string {
   if (!addr || addr.length < 12) return "—";
@@ -241,12 +240,12 @@ export function RecentSessionsClaimInfo({ walletConnected }: { walletConnected: 
   }, [open]);
 
   const hoverTitle = walletConnected
-    ? "Only the wallet that won the game (shown as Winner) can claim that game’s USDC."
-    : "Connect your wallet on Tezos X. Only the winning wallet can claim a game.";
+    ? "Only the wallet shown as Winner can claim that game."
+    : "Connect your wallet on Tezos X. Only the winner can claim.";
 
   const body = walletConnected
-    ? "Only the wallet listed as Winner for a game can claim that game. If you did not win, you will not see the claim button."
-    : "Connect your EVM wallet on Tezos X first. Claim appears only when your address matches the game winner.";
+    ? "Only the wallet listed as Winner for a game can claim that game. If your connected wallet is not the winner, you will not see the claim button."
+    : "Connect your wallet on Tezos X first. The claim button only appears when the connected wallet matches the winner.";
 
   return (
     <div className="recent-sessions-info-wrap" ref={wrapRef}>
@@ -422,10 +421,10 @@ export function PotFooter(props: {
   );
 }
 
-export function NetworkHelpPotz(props: { onAdd: () => void }) {
+export function NetworkHelpPotz(props: { onAdd: () => void; evmNetworkDisplayName: string }) {
   return (
     <div className="net-help">
-      You&apos;re not on {TEZOSX_EVM_TESTNET_NAME}.{" "}
+      You&apos;re not on {props.evmNetworkDisplayName}.{" "}
       <button type="button" className="link-btn inline" onClick={props.onAdd}>
         Add it to your wallet
       </button>{" "}

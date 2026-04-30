@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "compile": "hardhat compile",
-    "deploy:escrow:tezosx": "hardhat run scripts/deploy-escrow.ts --network tezosxTestnet",
+    "deploy:escrow:tezosx": "hardhat run scripts/deploy-escrow.ts --network tezosx",
     "deploy:escrow:local": "hardhat run scripts/deploy-escrow.ts --network localhost"
   },
   "devDependencies": {

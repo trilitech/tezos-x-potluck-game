@@ -53,14 +53,22 @@ ligo compile contract xbutton.mligo -m XButton > xbutton.tz
 
 ### 2. Compile the initial storage
 
+Empty **session-aware** storage (matches `empty_active_session` with `session_end` in the past so `start_session` can run):
+
 ```bash
 ligo compile storage xbutton.mligo \
-  '{ last_player = (None : address option);
-     last_player_evm = (None : bytes option);
-     pot = 0n;
-     session_end = ("1970-01-01T00:00:00Z" : timestamp);
-     claim_requested = false;
-     payout_completed = false }' \
+'{
+  current_session_id = 0n;
+  current_session = {
+    last_player_tezos = (None : address option);
+    last_player_evm = (None : bytes option);
+    pot = 0n;
+    session_end = ("1970-01-01T00:00:00Z" : timestamp);
+    claim_requested = false;
+  };
+  pending_session_ids = ([] : nat list);
+  pending_sessions = (Map.empty : (nat, XButton.pending_session) map);
+}' \
   -m XButton
 ```
 
@@ -68,7 +76,9 @@ Copy the output; you will paste it as `--init` in the next step.
 
 ### 3. Originate with octez-client
 
-From the **`ligo/`** directory (so `running xbutton.tz` resolves):
+From the **`ligo/`** directory (so `running xbutton.tz` resolves).
+
+**Testnet (demo txpark)** — Tezlink URL includes `/rpc/tezlink`:
 
 ```bash
 octez-client --endpoint https://demo.txpark.nomadic-labs.com/rpc/tezlink \
@@ -76,8 +86,27 @@ octez-client --endpoint https://demo.txpark.nomadic-labs.com/rpc/tezlink \
   transferring 0 from bootstrap1 \
   running xbutton.tz \
   --init '<PASTE_OUTPUT_OF_LIGO_COMPILE_STORAGE_HERE>' \
-  --burn-cap 1 \
-  --fee 0.05
+  --burn-cap 1
+```
+
+**Previewnet** — Michelson RPC is the host root (paths like `/chains/...` directly):
+
+```bash
+octez-client --endpoint https://michelson.previewnet.tezosx.nomadic-labs.com \
+  originate contract xbutton \
+  transferring 0 from bootstrap1 \
+  running xbutton.tz \
+  --init '<PASTE_OUTPUT_OF_LIGO_COMPILE_STORAGE_HERE>' \
+  --burn-cap 2 \
+  --fee 0.1 \
+  --gas-limit 600000
+```
+
+On Previewnet, if simulation fails with `evm_node.dev.insufficient_fees` or reveal + custom fee conflicts, reveal the manager key first, then originate with an explicit fee:
+
+```bash
+octez-client --endpoint https://michelson.previewnet.tezosx.nomadic-labs.com \
+  reveal key for bootstrap1 --fee 0.01 --burn-cap 1
 ```
 
 Replace `<PASTE_OUTPUT_OF_LIGO_COMPILE_STORAGE_HERE>` with the exact output from step 2. Add `--force` if the alias `xbutton` already exists locally.
@@ -92,11 +121,13 @@ Replace `<PASTE_OUTPUT_OF_LIGO_COMPILE_STORAGE_HERE>` with the exact output from
 octez-client --endpoint https://demo.txpark.nomadic-labs.com/rpc/tezlink \
   transfer 0 from tz1_ANY_KEY to <CONTRACT_ADDRESS> \
   --entrypoint start_session \
-  --arg '3600' \
+  --arg '300' \
   --burn-cap 1
 ```
 
-Replace `<CONTRACT_ADDRESS>` with your originated KT1. `3600` = 1 hour in seconds.
+Previewnet: use `--endpoint https://michelson.previewnet.tezosx.nomadic-labs.com` and add `--fee` / `--gas-limit` if the node rejects the default estimate.
+
+Replace `<CONTRACT_ADDRESS>` with your originated KT1. `300` = 5 minutes in seconds (same default as the frontend).
 
 Set `GAME_KT1` / `VITE_GAME_CONTRACT` in the relayer and frontend to the new contract address.
 

@@ -22,12 +22,15 @@ The frontend only sends ERC-20 transfers and **cross-runtime gateway** calls. Th
 
 Copy `.env.example` to `.env` and adjust as needed. All values use the `VITE_` prefix.
 
+- `VITE_TEZOSX_NETWORK` – `testnet` or `previewnet`; sets default RPCs, chain id, explorers, tzkt API, and **which contract env block applies** (`VITE_PREVIEWNET_*` vs `VITE_TESTNET_*`)
+- `VITE_PREVIEWNET_USDC_ADDRESS`, `VITE_PREVIEWNET_POT_ADDRESS`, `VITE_PREVIEWNET_GAME_CONTRACT` – **required** for previewnet (or the legacy `VITE_USDC_ADDRESS` / `VITE_POT_ADDRESS` / `VITE_GAME_CONTRACT` trio)
+- `VITE_TESTNET_USDC_ADDRESS`, `VITE_TESTNET_POT_ADDRESS`, `VITE_TESTNET_GAME_CONTRACT` – **required** for testnet (or the same legacy trio)
+- `VITE_CRAC_PRECOMPILE` – **required** unless the stack-specific `VITE_*_CRAC_PRECOMPILE` is set
 - `VITE_EVM_RPC` – EVM RPC URL (EVM interface)
-- `VITE_TEZLINK_RPC` – RPC URL used to read game contract storage (Michelson interface; path often includes `/rpc/tezlink` on hosted stacks)
-- `VITE_CHAIN_ID` – Chain ID (e.g. `127124`)
-- `VITE_USDC_ADDRESS` – USDC token address
-- `VITE_POT_ADDRESS` – Escrow (pot) contract address
-- `VITE_GAME_CONTRACT` – Michelson game contract KT1 (must match relayer `GAME_KT1`)
+- `VITE_TEZLINK_RPC` – RPC URL used to read game contract storage (Michelson interface; demo testnet uses `…/rpc/tezlink`; Previewnet uses the Michelson host root, e.g. `https://michelson.previewnet.tezosx.nomadic-labs.com`)
+- `VITE_CHAIN_ID` – Chain ID (e.g. `127124` testnet, `128064` Previewnet)
+- `VITE_TZKT_API_URL` – Optional tzkt REST base (Previewnet: `https://api.previewnet.tezosx.tzkt.io`)
+- `VITE_USDC_ADDRESS`, `VITE_POT_ADDRESS`, `VITE_GAME_CONTRACT` – optional legacy second choice if stack-specific vars are unset
 
 ## Run Locally
 

@@ -1,0 +1,8 @@
+{
+  "contract": "KT1Dj2B1Wmz3vqaBzHhEZpjAhXu7CrQBEiy1",
+  "operationHash": "oopRxts4MZujvCZnequN7QSmXAw6EM7FggYR8B7igP7F8pScKPp",
+  "includedInBlock": "BKyS2VXA4w4MdnDu4z7c3K9jupi6uDJzt7oLpM59EhCZCE2QCbz",
+  "endpoint": "https://michelson.previewnet.tezosx.nomadic-labs.com",
+  "originatedAt": "2026-04-30T15:30:00Z",
+  "note": "Session-aware XButton (LIGO). Reveal bootstrap1 with `octez-client reveal key for bootstrap1 --fee 0.01 --burn-cap 1` if origination fails with insufficient_fees; originate with `--fee 0.1 --gas-limit 600000`."
+}

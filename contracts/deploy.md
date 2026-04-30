@@ -27,8 +27,9 @@ Create or edit **`contracts/.env`** (not committed; keep keys private):
 
 | Variable | Role |
 |----------|------|
-| `TEZOSX_EVM_RPC` | EVM JSON-RPC URL (same host as `eth_*`) |
-| `TEZOSX_CHAIN_ID` | Chain id (decimal string) |
+| `TEZOSX_NETWORK` | `testnet` or `previewnet` — picks default RPC + chain id unless the two rows below are set |
+| `TEZOSX_EVM_RPC` | Optional override: EVM JSON-RPC URL (same host as `eth_*`) |
+| `TEZOSX_CHAIN_ID` | Optional override: chain id (decimal string) |
 | `DEPLOYER_PRIVATE_KEY` | `0x…` private key; must match relayer if relayer pays out |
 | `USDC_INITIAL_SUPPLY` | Optional; base units (default in script: `1000000000000`) |
 
@@ -45,12 +46,13 @@ npm run compile
 
 ```bash
 cd contracts
-npx hardhat run scripts/deploy-usdc.ts --network tezosxTestnet
+# Set TEZOSX_NETWORK=previewnet (or testnet) in contracts/.env, then:
+npx hardhat run scripts/deploy-usdc.ts --network tezosx
 ```
 
 (For a local node, use `--network localhost` and set `RPC_URL` if needed.)
 
-- Script writes **`deployments/latest-usdc.json`**
+- Script writes **`deployments/<testnet|previewnet>-usdc.json`**
 - Set in **`contracts/.env`**: `USDC_ADDRESS=<printed address>`
 - You will reuse this for escrow and for app env (below)
 
@@ -62,10 +64,10 @@ npx hardhat run scripts/deploy-usdc.ts --network tezosxTestnet
 
 ```bash
 cd contracts
-npx hardhat run scripts/deploy-escrow.ts --network tezosxTestnet
+npx hardhat run scripts/deploy-escrow.ts --network tezosx
 ```
 
-- Script writes **`deployments/latest-escrow.json`**
+- Script writes **`deployments/<testnet|previewnet>-escrow.json`**
 - Escrow address = **pot** = `POT_ADDRESS` in relayer / `VITE_POT_ADDRESS` in frontend
 
 ---
@@ -102,23 +104,27 @@ Update **`tezlink/deployments/latest-xbutton.json`** in git with the new KT1, op
 
 | Variable | Value |
 |----------|--------|
+| `VITE_TEZOSX_NETWORK` | `testnet` or `previewnet` — default RPCs, chain id, explorers, tzkt API, and **which contract block** applies |
+| `VITE_PREVIEWNET_USDC_ADDRESS`, `VITE_PREVIEWNET_POT_ADDRESS`, `VITE_PREVIEWNET_GAME_CONTRACT` | **Required** for previewnet (or set legacy `VITE_USDC_ADDRESS` / `VITE_POT_ADDRESS` / `VITE_GAME_CONTRACT` instead) |
+| `VITE_TESTNET_USDC_ADDRESS`, `VITE_TESTNET_POT_ADDRESS`, `VITE_TESTNET_GAME_CONTRACT` | **Required** for testnet (or set the legacy `VITE_*` trio instead) |
+| `VITE_CRAC_PRECOMPILE` | **Required** unless the stack-specific `VITE_*_CRAC_PRECOMPILE` is set |
 | `VITE_EVM_RPC` | EVM RPC (must match how users’ wallets connect) |
-| `VITE_TEZLINK_RPC` | Tezlink RPC base used for storage reads |
+| `VITE_TEZLINK_RPC` | Michelson / Tezlink RPC base used for storage reads (Previewnet: `https://michelson.previewnet.tezosx.nomadic-labs.com` — no `/rpc/tezlink` suffix) |
 | `VITE_CHAIN_ID` | Same chain as `TEZOSX_CHAIN_ID` |
-| `VITE_USDC_ADDRESS` | `USDC` deployment |
-| `VITE_POT_ADDRESS` | `XButtonEscrow` deployment |
-| `VITE_GAME_CONTRACT` | xButton KT1 |
+| `VITE_TZKT_API_URL` | Optional; tzkt REST root (Previewnet default: `https://api.previewnet.tezosx.tzkt.io`) |
+| `VITE_USDC_ADDRESS`, `VITE_POT_ADDRESS`, `VITE_GAME_CONTRACT` | Optional legacy second-choice overrides |
 
 **`xbutton-relayer/.env`**
 
 | Variable | Value |
 |----------|--------|
+| `TEZOSX_NETWORK` | `testnet` or `previewnet` — default `EVM_RPC` / `TEZLINK_RPC` when those are unset |
 | `EVM_RPC` | Same EVM endpoint as the frontend’s `VITE_EVM_RPC` |
-| `TEZLINK_RPC` | Same Tezlink endpoint used for the KT1 and storage |
-| `USDC_ADDRESS` | Same as `VITE_USDC_ADDRESS` |
-| `POT_ADDRESS` | Same as `VITE_POT_ADDRESS` |
-| `GAME_KT1` | Same as `VITE_GAME_CONTRACT` |
-| `CRAC_PRECOMPILE` | Network’s CRAC precompile (demo default in `.env.example`) |
+| `TEZLINK_RPC` | Same Michelson / Tezlink endpoint used for the KT1 and storage |
+| `PREVIEWNET_POT_ADDRESS`, `PREVIEWNET_GAME_KT1` | **Required** for previewnet (or legacy `POT_ADDRESS` / `GAME_KT1`) |
+| `TESTNET_POT_ADDRESS`, `TESTNET_GAME_KT1` | **Required** for testnet (or legacy `POT_ADDRESS` / `GAME_KT1`) |
+| `POT_ADDRESS`, `GAME_KT1` | Optional legacy second choice |
+| `CRAC_PRECOMPILE` | **Required** unless `PREVIEWNET_CRAC_PRECOMPILE` / `TESTNET_CRAC_PRECOMPILE` supplies it |
 | `RELAYER_PRIVATE_KEY` | Same key as EVM `DEPLOYER_PRIVATE_KEY` if escrow `authorizedCaller` is the deployer |
 
 **Optional: keep `contracts/.env` in sync** (`USDC_ADDRESS`, `POT_ADDRESS`, `GAME_KT1`) so one-off `hardhat` runs stay consistent.

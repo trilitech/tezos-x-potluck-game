@@ -8,18 +8,68 @@ import { ethers } from 'ethers';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const {
-  EVM_RPC,
-  RELAYER_PRIVATE_KEY,
-  POT_ADDRESS,
-  GAME_KT1,
-  CRAC_PRECOMPILE,
-  TEZLINK_RPC,
-} = process.env;
-
-if (!EVM_RPC || !RELAYER_PRIVATE_KEY || !POT_ADDRESS || !GAME_KT1 || !CRAC_PRECOMPILE || !TEZLINK_RPC) {
-  throw new Error('Missing required env vars (EVM_RPC, RELAYER_PRIVATE_KEY, POT_ADDRESS, GAME_KT1, CRAC_PRECOMPILE, TEZLINK_RPC)');
+function normalizeTezosXNetwork(raw) {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (v === 'previewnet' || v === 'preview') return 'previewnet';
+  return 'testnet';
 }
+
+const tezosXStack = normalizeTezosXNetwork(process.env.TEZOSX_NETWORK);
+const tezosXPresets = {
+  testnet: {
+    evmRpc: 'https://demo.txpark.nomadic-labs.com/rpc',
+    tezlinkRpc: 'https://demo.txpark.nomadic-labs.com/rpc/tezlink',
+  },
+  previewnet: {
+    evmRpc: 'https://evm.previewnet.tezosx.nomadic-labs.com',
+    tezlinkRpc: 'https://michelson.previewnet.tezosx.nomadic-labs.com',
+  },
+};
+const tezosXPreset = tezosXPresets[tezosXStack];
+
+function firstNonEmpty(...vals) {
+  for (const v of vals) {
+    const t = String(v ?? '').trim();
+    if (t) return t;
+  }
+  return undefined;
+}
+
+const EVM_RPC = process.env.EVM_RPC?.trim() || tezosXPreset.evmRpc;
+const TEZLINK_RPC = process.env.TEZLINK_RPC?.trim() || tezosXPreset.tezlinkRpc;
+const RELAYER_PRIVATE_KEY = process.env.RELAYER_PRIVATE_KEY;
+const POT_ADDRESS =
+  tezosXStack === 'previewnet'
+    ? firstNonEmpty(process.env.PREVIEWNET_POT_ADDRESS, process.env.POT_ADDRESS)
+    : firstNonEmpty(process.env.TESTNET_POT_ADDRESS, process.env.POT_ADDRESS);
+const GAME_KT1 =
+  tezosXStack === 'previewnet'
+    ? firstNonEmpty(process.env.PREVIEWNET_GAME_KT1, process.env.GAME_KT1)
+    : firstNonEmpty(process.env.TESTNET_GAME_KT1, process.env.GAME_KT1);
+const CRAC_PRECOMPILE =
+  tezosXStack === 'previewnet'
+    ? firstNonEmpty(process.env.PREVIEWNET_CRAC_PRECOMPILE, process.env.CRAC_PRECOMPILE)
+    : firstNonEmpty(process.env.TESTNET_CRAC_PRECOMPILE, process.env.CRAC_PRECOMPILE);
+
+if (!EVM_RPC || !RELAYER_PRIVATE_KEY || !TEZLINK_RPC) {
+  throw new Error(
+    'Missing required env vars (RELAYER_PRIVATE_KEY, and either TEZOSX_NETWORK or EVM_RPC + TEZLINK_RPC)',
+  );
+}
+if (!POT_ADDRESS || !GAME_KT1) {
+  const hint =
+    tezosXStack === 'previewnet'
+      ? 'Set PREVIEWNET_POT_ADDRESS and PREVIEWNET_GAME_KT1 (or legacy POT_ADDRESS / GAME_KT1).'
+      : 'Set TESTNET_POT_ADDRESS and TESTNET_GAME_KT1 (or legacy POT_ADDRESS / GAME_KT1).';
+  throw new Error(`Missing pot/game for TEZOSX_NETWORK=${tezosXStack}. ${hint}`);
+}
+if (!CRAC_PRECOMPILE) {
+  throw new Error(
+    'Missing CRAC precompile. Set CRAC_PRECOMPILE (or PREVIEWNET_CRAC_PRECOMPILE / TESTNET_CRAC_PRECOMPILE) in .env.',
+  );
+}
+
+console.log('[relayer] TEZOSX_NETWORK=%s EVM_RPC=%s TEZLINK_RPC=%s', tezosXStack, EVM_RPC, TEZLINK_RPC);
 
 const tezlinkStorageUrl = `${TEZLINK_RPC}/chains/main/blocks/head/context/contracts/${GAME_KT1}/storage`;
 

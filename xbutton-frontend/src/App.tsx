@@ -17,7 +17,9 @@ import {
   type EventLogEntry,
   type EventLogTone,
 } from "./potzluckUi";
-import { TEZOSX_EVM_TESTNET_NAME } from "./tezosxNetwork";
+import { evmNetworkDisplayName } from "./tezosxNetwork";
+import { resolveFrontendContracts } from "./tezosxContractEnv";
+import { normalizeTezosXNetwork, TEZOSX_FRONTEND_PRESETS } from "./tezosxNetworkPresets";
 import { WalletPickerModal } from "./WalletPickerModal";
 import {
   clearSavedWalletRdns,
@@ -33,18 +35,18 @@ import {
   type SelectedEthereumProvider,
 } from "./wallet/selectedEvmProvider";
 
-const evmRpc = import.meta.env.VITE_EVM_RPC ?? "https://demo.txpark.nomadic-labs.com/rpc";
-const tezlinkRpc = import.meta.env.VITE_TEZLINK_RPC ?? "https://demo.txpark.nomadic-labs.com/rpc/tezlink";
+const tezosXStack = normalizeTezosXNetwork(import.meta.env.VITE_TEZOSX_NETWORK);
+const tezosXPreset = TEZOSX_FRONTEND_PRESETS[tezosXStack];
+
+const evmRpc = import.meta.env.VITE_EVM_RPC?.trim() || tezosXPreset.evmRpc;
+const tezlinkRpc = import.meta.env.VITE_TEZLINK_RPC?.trim() || tezosXPreset.tezlinkRpc;
 const evmExplorerUrl =
-  import.meta.env.VITE_EVM_EXPLORER_URL ?? "https://demo-blockscout.txpark.nomadic-labs.com";
+  import.meta.env.VITE_EVM_EXPLORER_URL?.trim() || tezosXPreset.evmExplorerUrl;
 const tezosExplorerBase =
-  import.meta.env.VITE_TEZOS_EXPLORER_BASE ?? "https://sandbox.tezlink.tzkt.io";
-const chainId = BigInt(import.meta.env.VITE_CHAIN_ID ?? "127124");
-const usdcAddress = import.meta.env.VITE_USDC_ADDRESS ?? "0x257De96BE880EF01894304701C4aF4ef08FCbF9a";
-const potAddress = import.meta.env.VITE_POT_ADDRESS ?? "0x1B3d06699aBE347D3b835D0DA32591B4644730C0";
-const gameContract = import.meta.env.VITE_GAME_CONTRACT ?? "KT1Whp8174wXWCmhKKojfS3AdzKgTRaH9mie";
-const cracPrecompile =
-  import.meta.env.VITE_CRAC_PRECOMPILE ?? "0xff00000000000000000000000000000000000007";
+  import.meta.env.VITE_TEZOS_EXPLORER_BASE?.trim() || tezosXPreset.tezosExplorerBase;
+const chainId = BigInt(import.meta.env.VITE_CHAIN_ID?.trim() || tezosXPreset.chainId);
+const { usdc: usdcAddress, pot: potAddress, game: gameContract, crac: cracPrecompile } =
+  resolveFrontendContracts(tezosXStack, import.meta.env);
 const usdcDecimals = Number(import.meta.env.VITE_USDC_DECIMALS ?? "6");
 const pressAmount = import.meta.env.VITE_PRESS_AMOUNT ?? "1";
 const pollIntervalMs = Number(import.meta.env.VITE_POLL_INTERVAL_MS ?? "5000");
@@ -53,9 +55,7 @@ const gameStateWaitTimeoutMs = (() => {
   const n = Number(import.meta.env.VITE_GAME_STATE_WAIT_TIMEOUT_MS ?? "40000");
   return Number.isFinite(n) && n > 0 ? n : 40000;
 })();
-const DEFAULT_TESTNET_FAUCET_URL = "https://demo-faucet.txpark.nomadic-labs.com/";
-const faucetUrl =
-  import.meta.env.VITE_FAUCET_URL?.trim() || DEFAULT_TESTNET_FAUCET_URL;
+const faucetUrl = import.meta.env.VITE_FAUCET_URL?.trim() || tezosXPreset.faucetUrl;
 const DEFAULT_AIRDROP_API_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/api/airdrop";
 const airdropApiUrl = import.meta.env.VITE_AIRDROP_API_URL?.trim() || DEFAULT_AIRDROP_API_URL;
 
@@ -87,7 +87,10 @@ function airdropDeliveredLogMessage(usdc: boolean, xtz: boolean): string {
   return `Testnet airdrop complete: ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
 }
 
-const tzktApiUrl = tezlinkRpc.replace(/\/rpc\/tezlink\/?$/, "") + "/tzkt";
+const tzktApiUrl =
+  import.meta.env.VITE_TZKT_API_URL?.trim() ||
+  tezosXPreset.tzktApiUrl ||
+  tezlinkRpc.replace(/\/rpc\/tezlink\/?$/, "") + "/tzkt";
 
 /** Path segment for `{VITE_TEZOS_EXPLORER_BASE}/{path}/operations` (Michelson-interface tzkt). Defaults to game KT1; use rollup-style id if your explorer requires it. */
 const tezktGameOperationsPath =
@@ -95,6 +98,7 @@ const tezktGameOperationsPath =
 
 const CONFIG = {
   appName: "Pot(z)Luck",
+  stack: tezosXStack,
   evmRpc,
   tezlinkRpc,
   tezlinkStorageUrl: `${tezlinkRpc}/chains/main/blocks/head/context/contracts/${gameContract}/storage`,
@@ -114,22 +118,25 @@ const CONFIG = {
   gameStateWaitTimeoutMs,
 } as const;
 
-/** Tezos X testnet dashboard (RPC, chain ID, explorers, faucet): https://demo.txpark.nomadic-labs.com/ */
-const TEZOS_X_TESTNET_DASHBOARD_URL = "https://demo.txpark.nomadic-labs.com/";
+const TEZOSX_EVM_DISPLAY_NAME = evmNetworkDisplayName(CONFIG.stack);
+
+const TEZOS_X_DASHBOARD_URL = tezosXPreset.dashboardUrl;
 const POTZ_DOCS_URL = import.meta.env.VITE_DOCS_URL ?? "https://tezos.com/tezos-x/";
 const TEZLINK_SITE_URL = import.meta.env.VITE_TEZLINK_SITE_URL ?? "https://tezlink.tezos.com/";
 const NETWORK_INFO = {
-  testnetName: TEZOSX_EVM_TESTNET_NAME,
+  testnetName: TEZOSX_EVM_DISPLAY_NAME,
   deployedBy: "foucaultaurelien",
   created: "2026-04-22 10:19:00 UTC",
   evmNodeVersion: "649d7e6a",
-  rpcEndpoint: "https://demo.txpark.nomadic-labs.com/rpc",
-  tezlinkEndpoint: "https://demo.txpark.nomadic-labs.com/rpc/tezlink",
-  smartRollupNode: "https://demo.txpark.nomadic-labs.com/rollup",
-  chainId: "127124 (0x1f094)",
-  rollupAddress: "sr1HHiXgJf4WBRBLzQ61ybLDbz5C5p3FeNzA",
-  smartRollupNodeConfig: "https://demo.txpark.nomadic-labs.com/rollup/config",
-  dashboardUrl: "https://demo.txpark.nomadic-labs.com/",
+  rpcEndpoint: CONFIG.evmRpc,
+  tezlinkEndpoint: CONFIG.tezlinkRpc,
+  smartRollupNode:
+    CONFIG.stack === "testnet" ? "https://demo.txpark.nomadic-labs.com/rollup" : "—",
+  chainId: `${CONFIG.chainId} (0x${CONFIG.chainId.toString(16)})`,
+  rollupAddress: CONFIG.stack === "testnet" ? "sr1HHiXgJf4WBRBLzQ61ybLDbz5C5p3FeNzA" : "—",
+  smartRollupNodeConfig:
+    CONFIG.stack === "testnet" ? "https://demo.txpark.nomadic-labs.com/rollup/config" : "—",
+  dashboardUrl: TEZOS_X_DASHBOARD_URL,
 } as const;
 
 function evmTxUrl(hash: string) {
@@ -622,11 +629,11 @@ function pressStepDefs(needsApproval: boolean): FlowStepDef[] {
     {
       id: "wallet_deposit",
       label: "Deposit 1 USDC into the escrow",
-      detail: `You confirm a deposit on the escrow contract. USDC moves into the game pot on ${TEZOSX_EVM_TESTNET_NAME}.`,
+      detail: `You confirm a deposit on the escrow contract. USDC moves into the game pot on ${TEZOSX_EVM_DISPLAY_NAME}.`,
     },
     {
       id: "evm_confirm",
-      label: `Waiting for confirmation from ${TEZOSX_EVM_TESTNET_NAME}`,
+      label: `Waiting for confirmation from ${TEZOSX_EVM_DISPLAY_NAME}`,
       detail: "The network confirms your deposit transaction.",
     },
     {
@@ -652,7 +659,7 @@ const CLAIM_STEP_DEFS: FlowStepDef[] = [
   },
   {
     id: "evm_claim",
-    label: `Waiting for confirmation from ${TEZOSX_EVM_TESTNET_NAME}`,
+    label: `Waiting for confirmation from ${TEZOSX_EVM_DISPLAY_NAME}`,
     detail: "After this confirms, automation pays USDC from escrow and updates Michelson storage.",
   },
 ];
@@ -664,7 +671,7 @@ const START_SESSION_STEP_DEFS: FlowStepDef[] = [
   },
   {
     id: "evm_start",
-    label: `Waiting for confirmation from ${TEZOSX_EVM_TESTNET_NAME}`,
+    label: `Waiting for confirmation from ${TEZOSX_EVM_DISPLAY_NAME}`,
   },
 ];
 
@@ -672,7 +679,7 @@ function NetworkInfoModal(props: { open: boolean; onClose: () => void }) {
   if (!props.open) return null;
 
   const rows = [
-    ["Testnet Name", NETWORK_INFO.testnetName],
+    ["Network", NETWORK_INFO.testnetName],
     ["Created", NETWORK_INFO.created],
     ["EVM Node Version", NETWORK_INFO.evmNodeVersion],
     ["RPC Endpoint", NETWORK_INFO.rpcEndpoint],
@@ -783,7 +790,7 @@ type ActionState =
 
 type EthereumProvider = SelectedEthereumProvider;
 
-const TEZOS_X_EVM_WALLET_HINT = `Your wallet does not look like it is on ${TEZOSX_EVM_TESTNET_NAME} yet. Add or switch to that network, then try again.`;
+const TEZOS_X_EVM_WALLET_HINT = `Your wallet does not look like it is on ${TEZOSX_EVM_DISPLAY_NAME} yet. Add or switch to that network, then try again.`;
 
 /** Logged directly to the event strip; action→log mirror skips this prefix to avoid duplicates. */
 const CLAIM_MISMATCH_LOG_PREFIX = "Only the last person who pressed can claim.";
@@ -798,7 +805,7 @@ const DEPOSIT_MICHELSON_SYNC_LOG_PREFIX =
   "Calling the NAC gateway to update the game pot's Michelson-interface storage…";
 
 /** Shown while `wallet_switchEthereumChain` / add network is in progress. */
-const CONFIRM_APP_CHAIN_SWITCH_MSG = `Confirm switching to ${TEZOSX_EVM_TESTNET_NAME} in your wallet…`;
+const CONFIRM_APP_CHAIN_SWITCH_MSG = `Confirm switching to ${TEZOSX_EVM_DISPLAY_NAME} in your wallet…`;
 
 function isUserRejectedWalletError(error: unknown): boolean {
   const e = error as { code?: number | string };
@@ -1252,7 +1259,7 @@ function formatPressButtonError(error: unknown): string {
     parts.includes("estimategas")
   ) {
     return (
-      `The deposit did not go through. Most often you need at least 1 USDC, the right network (${TEZOSX_EVM_TESTNET_NAME}), ` +
+      `The deposit did not go through. Most often you need at least 1 USDC, the right network (${TEZOSX_EVM_DISPLAY_NAME}), ` +
       "and an approval if the wallet asked for one."
     );
   }
@@ -1310,8 +1317,8 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
     parts.includes("estimategas")
   ) {
     return kind === "claim"
-      ? `The claim did not send. Check gas, that you are on ${TEZOSX_EVM_TESTNET_NAME}, then refresh and try again.`
-      : `Could not start a new game. Check gas and that you are on ${TEZOSX_EVM_TESTNET_NAME}, then try again.`;
+      ? `The claim did not send. Check gas, that you are on ${TEZOSX_EVM_DISPLAY_NAME}, then refresh and try again.`
+      : `Could not start a new game. Check gas and that you are on ${TEZOSX_EVM_DISPLAY_NAME}, then try again.`;
   }
 
   return (e?.shortMessage ?? e?.message ?? (kind === "claim" ? "Claim failed." : "Start game failed.")).trim();
@@ -2166,7 +2173,7 @@ function App() {
       markRelayerWallet(w.address, w.chainId);
     }
     pushEventLog(
-      `${TEZOSX_EVM_TESTNET_NAME} is now selected in your wallet — checking balances for testnet funds…`,
+      `${TEZOSX_EVM_DISPLAY_NAME} is now selected in your wallet — checking balances for testnet funds…`,
       "info",
     );
     const { willAirdrop } = await ensureTestnetFundsIfNeeded(w);
@@ -2194,7 +2201,7 @@ function App() {
       pushEventLog(
         willAirdrop
           ? "Testnet funds are in your wallet. Click Play when you are ready to start or join a game."
-          : `Network ready on ${TEZOSX_EVM_TESTNET_NAME}. Click Play when you are ready to deposit or start a new game.`,
+          : `Network ready on ${TEZOSX_EVM_DISPLAY_NAME}. Click Play when you are ready to deposit or start a new game.`,
         "info",
       );
     }
@@ -2249,7 +2256,7 @@ function App() {
     }
     const addChainParam = {
       chainId: CONFIG.chainIdHex,
-      chainName: TEZOSX_EVM_TESTNET_NAME,
+      chainName: TEZOSX_EVM_DISPLAY_NAME,
       rpcUrls: [CONFIG.evmRpc],
       nativeCurrency: {
         name: "XTZ",
@@ -2287,7 +2294,7 @@ function App() {
           const detail =
             addOrSwitchErr instanceof Error ? addOrSwitchErr.message : String(addOrSwitchErr);
           pushEventLog(
-            `Could not add ${TEZOSX_EVM_TESTNET_NAME} in your wallet. In Rabby, ensure “Custom network” / testnets are enabled, add the RPC from Network information, then try again. ${detail}`,
+            `Could not add ${TEZOSX_EVM_DISPLAY_NAME} in your wallet. In Rabby, ensure “Custom network” / testnets are enabled, add the RPC from Network information, then try again. ${detail}`,
             "error",
           );
           return false;
@@ -2408,7 +2415,7 @@ function App() {
       });
       const switched = await requestAppChainSwitch();
       if (!switched) {
-        setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_TESTNET_NAME} first.` });
+        setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_DISPLAY_NAME} first.` });
         depositInFlightRef.current = false;
         return;
       }
@@ -2416,7 +2423,7 @@ function App() {
     }
 
     if (latestWallet.chainId !== CONFIG.chainId) {
-      setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_TESTNET_NAME} first.` });
+      setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_DISPLAY_NAME} first.` });
       depositInFlightRef.current = false;
       return;
     }
@@ -2508,7 +2515,7 @@ function App() {
         const approveTx = await usdc.approve(CONFIG.potAddress, USDC_ESCROW_APPROVE_CAP);
         setActionState({
           kind: "pending",
-          message: `Waiting for your approval transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
+          message: `Waiting for your approval transaction to confirm on ${TEZOSX_EVM_DISPLAY_NAME}…`,
           steps: markFlowSteps(depositSteps, "approve"),
           txHash: approveTx.hash,
         });
@@ -2526,7 +2533,7 @@ function App() {
       const tx = await escrow.deposit(PRESS_AMOUNT_UNITS);
       setActionState({
         kind: "pending",
-        message: `Waiting for your ${CONFIG.pressAmount} USDC deposit to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
+        message: `Waiting for your ${CONFIG.pressAmount} USDC deposit to confirm on ${TEZOSX_EVM_DISPLAY_NAME}…`,
         steps: markFlowSteps(depositSteps, "evm_confirm"),
         txHash: tx.hash,
       });
@@ -2571,7 +2578,7 @@ function App() {
     }
 
     if (!onExpectedNetwork) {
-      setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_TESTNET_NAME} first.` });
+      setActionState({ kind: "error", message: `Switch your wallet to ${TEZOSX_EVM_DISPLAY_NAME} first.` });
       return;
     }
 
@@ -2713,7 +2720,7 @@ function App() {
 
       setActionState({
         kind: "pending",
-        message: `Game #${claimTarget.sessionId}: Waiting for your claim transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
+        message: `Game #${claimTarget.sessionId}: Waiting for your claim transaction to confirm on ${TEZOSX_EVM_DISPLAY_NAME}…`,
         steps: markFlowSteps(CLAIM_STEP_DEFS, "evm_claim"),
         txHash: tx.hash,
       });
@@ -2865,7 +2872,7 @@ function App() {
   async function startNewSession(options?: { continueWithDeposit?: boolean }) {
     const ethereum = getEvmProvider();
     if (!ethereum) {
-      setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_TESTNET_NAME}.` });
+      setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_DISPLAY_NAME}.` });
       return false;
     }
     const continueWithDeposit = Boolean(options?.continueWithDeposit);
@@ -2880,7 +2887,7 @@ function App() {
       const provider = new ethers.BrowserProvider(ethereum);
       const accounts = (await provider.send("eth_accounts", [])) as string[];
       if (accounts.length === 0) {
-        setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_TESTNET_NAME}.` });
+        setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_DISPLAY_NAME}.` });
         return false;
       }
       let currentChainId = await readChainIdFromProvider(provider);
@@ -2891,14 +2898,14 @@ function App() {
         });
         const switched = await requestAppChainSwitch();
         if (!switched) {
-          setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_TESTNET_NAME}.` });
+          setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_DISPLAY_NAME}.` });
           return false;
         }
         const p2 = new ethers.BrowserProvider(ethereum);
         currentChainId = await readChainIdFromProvider(p2);
       }
       if (currentChainId !== CONFIG.chainId) {
-        setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_TESTNET_NAME}.` });
+        setActionState({ kind: "error", message: `Connect your wallet and switch to ${TEZOSX_EVM_DISPLAY_NAME}.` });
         return false;
       }
       setActionState({
@@ -2918,7 +2925,7 @@ function App() {
       );
       setActionState({
         kind: "pending",
-        message: `Waiting for your new game transaction to confirm on ${TEZOSX_EVM_TESTNET_NAME}…`,
+        message: `Waiting for your new game transaction to confirm on ${TEZOSX_EVM_DISPLAY_NAME}…`,
         steps: markFlowSteps(START_SESSION_STEP_DEFS, "evm_start"),
         txHash: tx.hash,
       });
@@ -2950,7 +2957,7 @@ function App() {
       setActionState({
         kind: "error",
         message: isRevert
-          ? `Could not start a new game. Refresh, check you are on ${TEZOSX_EVM_TESTNET_NAME}, and try again.`
+          ? `Could not start a new game. Refresh, check you are on ${TEZOSX_EVM_DISPLAY_NAME}, and try again.`
           : formatGatewayError(error, "start_session"),
       });
       return false;
@@ -3084,7 +3091,7 @@ function App() {
       case "connect":
         return { label: "Connect", sub: "wallet to play" };
       case "wrong-net":
-        return { label: "Add", sub: TEZOSX_EVM_TESTNET_NAME };
+        return { label: "Add", sub: TEZOSX_EVM_DISPLAY_NAME };
       case "idle":
         return { label: "Play", sub: null };
       case "play":
@@ -3136,7 +3143,7 @@ function App() {
             <div className="topbar-right">
               <a
                 className="btn ghost sm"
-                href={TEZOS_X_TESTNET_DASHBOARD_URL}
+                href={TEZOS_X_DASHBOARD_URL}
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -3221,7 +3228,7 @@ function App() {
               </button>
               <a
                 className="btn ghost sm"
-                href={TEZOS_X_TESTNET_DASHBOARD_URL}
+                href={TEZOS_X_DASHBOARD_URL}
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -3408,7 +3415,7 @@ function App() {
             )}
             <a
               className="btn ghost sm"
-              href={TEZOS_X_TESTNET_DASHBOARD_URL}
+              href={TEZOS_X_DASHBOARD_URL}
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -3526,7 +3533,7 @@ function App() {
                 ) : null}
               </div>
               {walletState.address && !onExpectedNetwork ? (
-                <NetworkHelpPotz onAdd={() => void switchNetwork()} />
+                <NetworkHelpPotz onAdd={() => void switchNetwork()} evmNetworkDisplayName={TEZOSX_EVM_DISPLAY_NAME} />
               ) : null}
               <EventLogStrip entries={eventLog} evmTxUrl={evmTxUrl} />
             </div>

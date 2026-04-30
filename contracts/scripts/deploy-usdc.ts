@@ -2,6 +2,7 @@ import * as dotenv from "dotenv";
 import { ethers } from "hardhat";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { normalizeTezosXNetwork } from "../networkPresets";
 
 dotenv.config();
 
@@ -28,22 +29,19 @@ async function main() {
 
   const outDir = path.join(__dirname, "..", "deployments");
   fs.mkdirSync(outDir, { recursive: true });
-  const outPath = path.join(outDir, "latest-usdc.json");
-  fs.writeFileSync(
-    outPath,
-    JSON.stringify(
-      {
-        network: "tezosxTestnet",
-        usdc: usdcAddress,
-        deployer: deployer.address,
-        initialSupply: initialSupply.toString(),
-        deployedAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-  );
-  console.log("\nWrote", outPath);
+  const stack = normalizeTezosXNetwork(process.env.TEZOSX_NETWORK);
+  const slug = stack === "previewnet" ? "previewnet" : "testnet";
+  const networkLabel = stack === "previewnet" ? "tezosxPreviewnet" : "tezosxTestnet";
+  const payload = {
+    network: networkLabel,
+    usdc: usdcAddress,
+    deployer: deployer.address,
+    initialSupply: initialSupply.toString(),
+    deployedAt: new Date().toISOString(),
+  };
+  const slugPath = path.join(outDir, `${slug}-usdc.json`);
+  fs.writeFileSync(slugPath, JSON.stringify(payload, null, 2));
+  console.log("\nWrote", slugPath, `(TEZOSX_NETWORK=${stack})`);
 }
 
 main().catch((e) => {
