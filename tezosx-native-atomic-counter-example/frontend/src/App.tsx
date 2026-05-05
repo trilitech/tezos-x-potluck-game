@@ -16,7 +16,7 @@ import {
   type EventLogPhraseLink,
   type EventLogTone,
 } from "./nacCounterUi";
-import { evmNetworkDisplayName } from "./tezosxNetwork";
+import { evmNetworkDisplayName, stackShortLabel, walletAddNetworkHelpRabby } from "./tezosxNetwork";
 import {
   buildNetworkInfoModalRows,
   normalizeTezosXNetwork,
@@ -32,6 +32,12 @@ import {
   type Eip6963ProviderDetail,
 } from "./wallet/discoverEip6963";
 import { getEvmProvider, setSelectedEvmProvider } from "./wallet/selectedEvmProvider";
+import {
+  createWalletFundingHelpers,
+  formatAirdropSuccessLog,
+  type AirdropApiSuccess,
+  type WalletState as FundingWalletState,
+} from "./walletFunding";
 
 const tezosXStack: TezosXNetworkName = normalizeTezosXNetwork(import.meta.env.VITE_TEZOSX_NETWORK);
 const tezosXPreset = TEZOSX_FRONTEND_PRESETS[tezosXStack];
@@ -94,6 +100,43 @@ const FAUCET_URL =
 const DOCS_URL = import.meta.env.VITE_DOCS_URL ?? "https://x.tezos.com/docs/";
 
 const TEZOSX_EVM_DISPLAY_NAME = evmNetworkDisplayName(tezosXStack);
+const CHAIN_ID_HEX = `0x${chainId.toString(16)}`;
+
+const TEZOS_X_EVM_WALLET_HINT = `Your wallet does not look like it is on ${TEZOSX_EVM_DISPLAY_NAME} yet. Add or switch to that network, then try again.`;
+
+const CONFIRM_APP_CHAIN_SWITCH_MSG = `Confirm switching to ${TEZOSX_EVM_DISPLAY_NAME} in your wallet…`;
+
+const DEFAULT_AIRDROP_API_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/api/airdrop";
+const airdropApiUrl = import.meta.env.VITE_AIRDROP_API_URL?.trim() || DEFAULT_AIRDROP_API_URL;
+const AIRDROP_USDC_AMOUNT = "5";
+const AIRDROP_XTZ_AMOUNT = "1";
+const TEZOS_X_RELAYER_RDNS = "com.tezosx.relayer";
+const RELAYER_WALLET_KEY_PREFIX = "potzluck_relayer_wallet_v1";
+const RELAYER_XTZ_AIRDROP_KEY_PREFIX = "potzluck_relayer_xtz_airdrop_v1";
+
+const walletFunding = createWalletFundingHelpers({
+  chainId,
+  pressAmount: "0",
+  pressAmountUnits: 0n,
+  airdropApiUrl,
+  airdropUsdcAmount: AIRDROP_USDC_AMOUNT,
+  airdropXtzAmount: AIRDROP_XTZ_AMOUNT,
+  relayerRdns: TEZOS_X_RELAYER_RDNS,
+  relayerWalletKeyPrefix: RELAYER_WALLET_KEY_PREFIX,
+  relayerXtzAirdropKeyPrefix: RELAYER_XTZ_AIRDROP_KEY_PREFIX,
+});
+
+const {
+  airdropDeliveredLogMessage,
+  formatAirdropError,
+  hasRelayerXtzAirdropFlag,
+  isRelayerWalletLocallyMarked,
+  isTezosRelayerProviderLike,
+  markRelayerWallet,
+  markRelayerXtzAirdropped,
+  refreshWalletUntilPlayBalancesVisible,
+  requestAirdrop,
+} = walletFunding;
 
 const COUNTER_WRAPPER_ABI = [
   "function increment() external",
@@ -107,23 +150,32 @@ type CounterAction = "increment" | "decrement" | "reset";
 
 type CounterState = {
   value: number | null;
-  fetchedAt: number | null;
-  storageUpdatedAt: number | null;
 };
 
-type CounterRead = { value: number; fetchedAt: number };
+type CounterRead = { value: number };
 
-function mergeCounterState(prev: CounterState, read: CounterRead): CounterState {
-  const storageUpdatedAt =
-    prev.value == null || read.value !== prev.value ? read.fetchedAt : (prev.storageUpdatedAt ?? read.fetchedAt);
-  return { ...read, storageUpdatedAt };
+function mergeCounterState(_prev: CounterState, read: CounterRead): CounterState {
+  return { value: read.value };
 }
 
 type WalletState = {
   address: string | null;
   chainId: bigint | null;
   nativeBalance: string | null;
+  /** Raw wei balance for starter-airdrop / relayer logic (same helpers as xbutton-frontend). */
+  xtzBalanceRaw: bigint | null;
 };
+
+function toFundingWallet(s: WalletState): FundingWalletState {
+  return {
+    address: s.address,
+    chainId: s.chainId,
+    usdcBalance: null,
+    usdcAllowance: null,
+    usdcBalanceRaw: 0n,
+    xtzBalanceRaw: s.xtzBalanceRaw,
+  };
+}
 
 type MichelsonNode = {
   int?: string;
@@ -256,7 +308,85 @@ async function readCounterState(): Promise<CounterRead> {
   if (value == null) {
     throw new Error("Unexpected counter storage shape returned by Michelson RPC.");
   }
-  return { value, fetchedAt: Date.now() };
+  return { value };
+}
+
+function isUserRejectedWalletError(error: unknown): boolean {
+  if (error == null) return false;
+  const e = error as {
+    code?: string | number;
+    message?: string;
+    shortMessage?: string;
+    reason?: string;
+  };
+  if (e.code === 4001 || e.code === "ACTION_REJECTED") return true;
+  const msg = `${e.shortMessage ?? e.message ?? String(error)}`.toLowerCase();
+  return (
+    msg.includes("user rejected") ||
+    msg.includes("user denied") ||
+    msg.includes("ethers-user-denied") ||
+    msg.includes("rejected the request") ||
+    msg.includes("action_rejected")
+  );
+}
+
+/**
+ * EIP-1193 error `code` as returned by the wallet, or wrapped by ethers / extension (e.g. 4902 inside
+ * `data.originalError` when the top-level `code` is -32603).
+ */
+function getWalletRpcErrorCode(error: unknown): number | undefined {
+  const e = error as {
+    code?: number | string;
+    data?: { code?: number; originalError?: { code?: number } };
+    info?: { error?: { code?: number } };
+    cause?: { code?: number };
+  };
+  const n = (c: number | string | undefined): number | undefined => {
+    if (c === undefined) return undefined;
+    if (typeof c === "number" && Number.isFinite(c)) return c;
+    if (typeof c === "string" && /^-?\d+$/.test(c)) return parseInt(c, 10);
+    return undefined;
+  };
+  return (
+    n(e.code) ??
+    n(e.data?.originalError?.code) ??
+    n(e.data?.code) ??
+    n(e.info?.error?.code) ??
+    n(e.cause?.code)
+  );
+}
+
+function isUnrecognizedChainError(error: unknown): boolean {
+  if (getWalletRpcErrorCode(error) === 4902) return true;
+  if (getWalletRpcErrorCode(error) === -32603) {
+    let blob = "";
+    try {
+      blob = JSON.stringify(error);
+    } catch {
+      /* ignore */
+    }
+    if (blob.includes("4902")) return true;
+  }
+  const msg = `${(error as Error)?.message ?? ""} ${
+    (error as { data?: { originalError?: { message?: string } } })?.data?.originalError?.message ?? ""
+  }`.toLowerCase();
+  return msg.includes("unrecognized") && msg.includes("chain");
+}
+
+function isWalletNetworkSetupError(error: unknown): boolean {
+  if (isUserRejectedWalletError(error)) return false;
+  const e = error as { message?: string; data?: { originalError?: { message?: string } } };
+  const msg = `${e?.message ?? ""} ${e?.data?.originalError?.message ?? ""}`;
+  if (!msg) return false;
+  return msg.includes("Cannot destructure property") && msg.includes("defaultChain");
+}
+
+/**
+ * Prefer over `provider.getNetwork()` — it can disagree with the extension (cached / registered networks).
+ */
+async function readChainIdFromProvider(provider: ethers.BrowserProvider): Promise<bigint> {
+  const hex = (await provider.send("eth_chainId", [])) as string;
+  return BigInt(hex);
 }
 
 function formatCounterError(
@@ -265,11 +395,11 @@ function formatCounterError(
   ctx?: { valueBefore?: number | null },
 ): string {
   const act = action.charAt(0).toUpperCase() + action.slice(1);
-  const err = error as { code?: string; message?: string; shortMessage?: string; data?: string };
-  const msg = `${err?.shortMessage ?? err?.message ?? error ?? ""}`.toLowerCase();
-  if (msg.includes("user rejected") || msg.includes("user denied")) {
+  if (isUserRejectedWalletError(error)) {
     return `You canceled ${act} in your wallet.`;
   }
+  const err = error as { code?: string; message?: string; shortMessage?: string; data?: string };
+  const msg = `${err?.shortMessage ?? err?.message ?? error ?? ""}`.toLowerCase();
   const decrementAtZero =
     action === "decrement" &&
     ctx?.valueBefore === 0 &&
@@ -289,17 +419,6 @@ function formatCounterError(
     return `${act} reverted.${hint} Check Blockscout (EVM) and Michelson explorers, then try again.`;
   }
   return `Could not ${act} the counter right now.`;
-}
-
-function formatTimeAgo(ts: number | null): string {
-  if (!ts) return "Waiting for first fetch";
-  const delta = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (delta < 2) return "Just now";
-  if (delta < 60) return `${delta}s ago`;
-  const mins = Math.floor(delta / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  return `${hrs}h ago`;
 }
 
 async function wait(ms: number) {
@@ -324,6 +443,7 @@ function App() {
     address: null,
     chainId: null,
     nativeBalance: null,
+    xtzBalanceRaw: null,
   });
   const [walletOptions, setWalletOptions] = useState<Eip6963ProviderDetail[]>([]);
   const [walletPickerOpen, setWalletPickerOpen] = useState(false);
@@ -331,8 +451,6 @@ function App() {
   const [discoveringWallets, setDiscoveringWallets] = useState(false);
   const [counterState, setCounterState] = useState<CounterState>({
     value: null,
-    fetchedAt: null,
-    storageUpdatedAt: null,
   });
   const [eventLog, setEventLog] = useState<EventLogEntry[]>(() => {
     if (!counterKt1Configured) {
@@ -361,11 +479,17 @@ function App() {
     return lines;
   });
   const [networkInfoOpen, setNetworkInfoOpen] = useState(false);
+  const [evmListenerKey, setEvmListenerKey] = useState(0);
   const [isActing, setIsActing] = useState(false);
-  const [, setStorageAgeTick] = useState(0);
   const mountedRef = useRef(true);
   const walletMenuRef = useRef<HTMLDivElement>(null);
+  const selectedWalletRdnsRef = useRef<string | null>(null);
   const wrapperMismatchWarnedRef = useRef(false);
+  const walletSessionActiveRef = useRef(false);
+  const walletStateRef = useRef(walletState);
+  useEffect(() => {
+    walletStateRef.current = walletState;
+  }, [walletState]);
   const hasInjectedWallet = typeof window !== "undefined" && Boolean(window.ethereum);
 
   function pushEventLog(
@@ -388,33 +512,151 @@ function App() {
     ]);
   }
 
-  async function refreshWalletState() {
+  async function tryEnsureGasViaAirdrop(w: WalletState): Promise<void> {
+    if (!w.address || w.chainId !== chainId) return;
+    const fw = toFundingWallet(w);
+    const relayerWallet = isRelayerWalletLocallyMarked(fw);
+    const needsXtzAirdrop = relayerWallet
+      ? !hasRelayerXtzAirdropFlag(fw)
+      : w.xtzBalanceRaw == null || w.xtzBalanceRaw === 0n;
+    if (!needsXtzAirdrop) return;
+
+    let result: AirdropApiSuccess;
+    try {
+      pushEventLog(
+        `Your wallet needs ${stackShortLabel(tezosXStack)} XTZ for gas — requesting an airdrop…`,
+        "info",
+      );
+      result = await requestAirdrop(w.address, { usdc: false, xtz: true });
+    } catch (error) {
+      if (error instanceof Error && error.message === "AIRDROP_NOT_CONFIGURED") {
+        pushEventLog(
+          "Starter airdrop is not configured. Add XTZ via the faucet (see footer) to pay for gas.",
+          "info",
+        );
+        return;
+      }
+      throw error;
+    }
+
+    if (relayerWallet) {
+      markRelayerXtzAirdropped(w.address, w.chainId);
+    }
+
+    await refreshWalletUntilPlayBalancesVisible(true, async () => toFundingWallet(await refreshWalletState()));
+
+    pushEventLog(
+      formatAirdropSuccessLog(result, stackShortLabel(tezosXStack)) ??
+        airdropDeliveredLogMessage(false, true, stackShortLabel(tezosXStack)),
+      "success",
+    );
+  }
+
+  async function refreshWalletState(): Promise<WalletState> {
+    const empty: WalletState = { address: null, chainId: null, nativeBalance: null, xtzBalanceRaw: null };
     const ethereum = getEvmProvider();
     if (!ethereum) {
-      setWalletState({ address: null, chainId: null, nativeBalance: null });
-      return;
+      walletSessionActiveRef.current = false;
+      if (mountedRef.current) setWalletState(empty);
+      return empty;
     }
     try {
       const provider = new ethers.BrowserProvider(ethereum);
       const accounts = (await provider.send("eth_accounts", [])) as string[];
-      const address = accounts[0] ?? null;
-      const network = await provider.getNetwork();
+      const currentChainId = await readChainIdFromProvider(provider);
+
+      let address: string | null = null;
+      if (accounts.length > 0) {
+        address = ethers.getAddress(accounts[0]);
+        walletSessionActiveRef.current = true;
+      } else if (walletSessionActiveRef.current) {
+        address = walletStateRef.current.address;
+      }
+
       let nativeBalance: string | null = null;
+      let xtzBalanceRaw: bigint | null = null;
       if (address) {
-        const bal = await provider.getBalance(address);
-        nativeBalance = Number(ethers.formatEther(bal)).toFixed(4);
+        try {
+          const bal = await provider.getBalance(address);
+          xtzBalanceRaw = bal;
+          nativeBalance = Number(ethers.formatEther(bal)).toFixed(4);
+        } catch {
+          nativeBalance = walletStateRef.current.nativeBalance;
+          xtzBalanceRaw = walletStateRef.current.xtzBalanceRaw;
+        }
       }
-      if (mountedRef.current) {
-        setWalletState({
-          address,
-          chainId: network.chainId,
-          nativeBalance,
-        });
-      }
+
+      const next: WalletState = { address, chainId: currentChainId, nativeBalance, xtzBalanceRaw };
+      if (mountedRef.current) setWalletState(next);
+      return next;
     } catch {
       if (mountedRef.current) {
-        setWalletState({ address: null, chainId: null, nativeBalance: null });
+        setWalletState((prev) =>
+          prev.address && walletSessionActiveRef.current ? prev : empty,
+        );
       }
+      const prev = walletStateRef.current;
+      return prev.address && walletSessionActiveRef.current ? prev : empty;
+    }
+  }
+
+  /**
+   * `wallet_switchEthereumChain` to the app chain, or add+switch if the chain isn't in the wallet.
+   */
+  async function requestAppChainSwitch(): Promise<boolean> {
+    const ethereum = getEvmProvider();
+    if (!ethereum?.request) {
+      return false;
+    }
+    const addChainParam = {
+      chainId: CHAIN_ID_HEX,
+      chainName: TEZOSX_EVM_DISPLAY_NAME,
+      rpcUrls: [evmRpc],
+      nativeCurrency: {
+        name: "XTZ",
+        symbol: "XTZ",
+        decimals: 18,
+      },
+      blockExplorerUrls: [evmExplorerUrl],
+    } as const;
+
+    try {
+      await ethereum.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: CHAIN_ID_HEX }],
+      });
+      return true;
+    } catch (error) {
+      if (isUserRejectedWalletError(error)) {
+        return false;
+      }
+      if (isUnrecognizedChainError(error)) {
+        try {
+          await ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [addChainParam],
+          });
+          await ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: CHAIN_ID_HEX }],
+          });
+          return true;
+        } catch (addOrSwitchErr) {
+          if (isUserRejectedWalletError(addOrSwitchErr)) {
+            return false;
+          }
+          const detail =
+            addOrSwitchErr instanceof Error ? addOrSwitchErr.message : String(addOrSwitchErr);
+          pushEventLog(
+            `Could not add ${TEZOSX_EVM_DISPLAY_NAME} in your wallet. In Rabby, ${walletAddNetworkHelpRabby(tezosXStack)}, then try again. ${detail}`,
+            "error",
+          );
+          return false;
+        }
+      }
+      const msg = error instanceof Error ? error.message : String(error);
+      pushEventLog(`Could not switch network: ${msg}`, "error");
+      return false;
     }
   }
 
@@ -425,19 +667,15 @@ function App() {
   }
 
   function disconnectWallet() {
+    walletSessionActiveRef.current = false;
+    selectedWalletRdnsRef.current = null;
     clearSavedWalletRdns();
     setSelectedEvmProvider(null);
+    setEvmListenerKey((k) => k + 1);
     setWalletMenuOpen(false);
     void refreshWalletState();
     pushEventLog("Wallet disconnected.", "info");
   }
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setStorageAgeTick((n) => n + 1);
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -489,8 +727,14 @@ function App() {
   useEffect(() => {
     const ethereum = getEvmProvider();
     if (!ethereum?.on || !ethereum?.removeListener) return;
-    const handleAccountsChanged = () => {
-      refreshWalletState().catch(() => undefined);
+    const handleAccountsChanged = (accs: unknown) => {
+      const accounts = accs as string[];
+      if (!accounts?.length) {
+        walletSessionActiveRef.current = false;
+        setWalletState({ address: null, chainId: null, nativeBalance: null, xtzBalanceRaw: null });
+        return;
+      }
+      void refreshWalletState();
     };
     const handleChainChanged = () => {
       refreshWalletState().catch(() => undefined);
@@ -501,7 +745,7 @@ function App() {
       ethereum.removeListener?.("accountsChanged", handleAccountsChanged);
       ethereum.removeListener?.("chainChanged", handleChainChanged);
     };
-  }, [walletState.address]);
+  }, [evmListenerKey]);
 
   useEffect(() => {
     if (!walletMenuOpen) return;
@@ -545,52 +789,100 @@ function App() {
   async function connectWalletDetail(detail: Eip6963ProviderDetail) {
     setSelectedEvmProvider(detail.provider);
     saveWalletRdns(detail.info.rdns || detail.info.uuid);
+    selectedWalletRdnsRef.current = detail.info.rdns || detail.info.uuid;
     setWalletPickerOpen(false);
-    try {
-      const provider = new ethers.BrowserProvider(detail.provider);
-      await provider.send("eth_requestAccounts", []);
-      await switchToTezosXNetwork(detail.provider);
-      await refreshWalletState();
-      const connectMsg =
-        "Wallet connected. Click the main button to update Michelson-interface storage via a Solidity contract on the EVM interface using NAC (Native Atomic Composability) on Tezos X.";
-      const phraseLinks: EventLogPhraseLink[] | undefined =
-        WRAPPER_ADDRESS.length > 0
-          ? [{ phrase: "Solidity contract", href: evmContractExplorerUrl(WRAPPER_ADDRESS) }]
-          : undefined;
-      pushEventLog(connectMsg, "success", undefined, undefined, phraseLinks);
-    } catch (error) {
-      clearSavedWalletRdns();
-      setSelectedEvmProvider(null);
-      const msg = error instanceof Error ? error.message : "Could not connect wallet.";
-      pushEventLog(msg, "error");
-    }
-  }
+    setEvmListenerKey((k) => k + 1);
 
-  async function switchToTezosXNetwork(providerDetail?: Eip6963ProviderDetail["provider"]) {
-    const ethereum = providerDetail ?? getEvmProvider();
-    if (!ethereum?.request) return;
-    const chainIdHex = `0x${chainId.toString(16)}`;
-    try {
-      await ethereum.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: chainIdHex }],
-      });
-    } catch (error) {
-      const err = error as { code?: number };
-      if (err?.code !== 4902) throw error;
-      await ethereum.request({
-        method: "wallet_addEthereumChain",
-        params: [
-          {
-            chainId: chainIdHex,
-            chainName: TEZOSX_EVM_DISPLAY_NAME,
-            nativeCurrency: { name: "XTZ", symbol: "XTZ", decimals: 18 },
-            rpcUrls: [evmRpc],
-            blockExplorerUrls: [evmExplorerUrl],
-          },
-        ],
-      });
+    const ethereum = getEvmProvider();
+    if (!ethereum) {
+      pushEventLog(
+        "No browser wallet was found. Install a wallet extension (for example MetaMask), or open this page in your wallet’s in-app browser, then press Connect again.",
+        "error",
+      );
+      return;
     }
+
+    let accounts: string[];
+    try {
+      const provider = new ethers.BrowserProvider(ethereum);
+      accounts = (await provider.send("eth_requestAccounts", [])) as string[];
+    } catch (error) {
+      if (isUserRejectedWalletError(error)) {
+        pushEventLog(
+          "Your wallet did not approve access (you may have rejected the request or closed the prompt). Press Connect to try again.",
+          "info",
+        );
+        return;
+      }
+      if (isWalletNetworkSetupError(error)) {
+        pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
+        setNetworkInfoOpen(true);
+        return;
+      }
+      const msg =
+        error instanceof Error ? error.message : "Could not reach your wallet. Unlock it and try Connect again.";
+      pushEventLog(msg, "error");
+      return;
+    }
+
+    if (accounts.length === 0) {
+      pushEventLog(
+        "Your wallet returned no account. Unlock it, allow this site, or pick an active account, then press Connect again.",
+        "error",
+      );
+      return;
+    }
+
+    walletSessionActiveRef.current = true;
+
+    let connected = await refreshWalletState();
+    if (!connected.address) {
+      pushEventLog(
+        "Could not read your wallet after it connected. Unlock your wallet, check that you are on a supported network, and try Connect again.",
+        "error",
+      );
+      return;
+    }
+
+    if (connected.chainId !== chainId) {
+      pushEventLog(CONFIRM_APP_CHAIN_SWITCH_MSG, "info");
+      const switched = await requestAppChainSwitch();
+      if (!switched) {
+        await refreshWalletState();
+        pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
+        return;
+      }
+      connected = await refreshWalletState();
+      if (!connected.address || connected.chainId !== chainId) {
+        pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
+        return;
+      }
+    }
+
+    if (isTezosRelayerProviderLike(getEvmProvider(), selectedWalletRdnsRef.current)) {
+      markRelayerWallet(connected.address, connected.chainId);
+    }
+
+    try {
+      await tryEnsureGasViaAirdrop(connected);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("AIRDROP_FAILED:")) {
+        pushEventLog(formatAirdropError(error, stackShortLabel(tezosXStack)), "error");
+        return;
+      }
+      pushEventLog(error instanceof Error ? error.message : "Airdrop failed.", "error");
+      return;
+    }
+
+    await refreshWalletState();
+
+    const connectMsg =
+      "Wallet connected. Click the main button to update Michelson-interface storage via a Solidity contract on the EVM interface using NAC (Native Atomic Composability) on Tezos X.";
+    const phraseLinks: EventLogPhraseLink[] | undefined =
+      WRAPPER_ADDRESS.length > 0
+        ? [{ phrase: "Solidity contract", href: evmContractExplorerUrl(WRAPPER_ADDRESS) }]
+        : undefined;
+    pushEventLog(connectMsg, "success", undefined, undefined, phraseLinks);
   }
 
   async function performCounterAction(action: CounterAction) {
@@ -616,10 +908,28 @@ function App() {
     try {
       const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
-      const network = await provider.getNetwork();
-      if (network.chainId !== chainId) {
-        await switchToTezosXNetwork();
+      const currentChainId = await readChainIdFromProvider(provider);
+      if (currentChainId !== chainId) {
+        pushEventLog(CONFIRM_APP_CHAIN_SWITCH_MSG, "info");
+        const switched = await requestAppChainSwitch();
+        if (!switched) {
+          pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
+          return;
+        }
       }
+
+      const gasWallet = await refreshWalletState();
+      try {
+        await tryEnsureGasViaAirdrop(gasWallet);
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("AIRDROP_FAILED:")) {
+          pushEventLog(formatAirdropError(error, stackShortLabel(tezosXStack)), "error");
+          return;
+        }
+        pushEventLog(error instanceof Error ? error.message : "Airdrop failed.", "error");
+        return;
+      }
+      await refreshWalletState();
 
       pushEventLog(
         `Please confirm ${actLabel} in your wallet. This EVM transaction routes through the NAC gateway to Michelson-interface storage.`,
@@ -687,7 +997,8 @@ function App() {
       return;
     }
     if (mainUiState === "wrong-net") {
-      await switchToTezosXNetwork();
+      pushEventLog(CONFIRM_APP_CHAIN_SWITCH_MSG, "info");
+      await requestAppChainSwitch();
       await refreshWalletState();
       return;
     }
@@ -767,10 +1078,6 @@ function App() {
                 </div>
               </div>
               <div className="stat-row">
-                <div className="stat-l">Storage updated</div>
-                <div className="stat-v">{formatTimeAgo(counterState.storageUpdatedAt)}</div>
-              </div>
-              <div className="stat-row">
                 <div className="stat-l">Counter KT1</div>
                 <div className="stat-v">
                   {counterKt1Configured ? (
@@ -782,6 +1089,24 @@ function App() {
                       title={COUNTER_KT1}
                     >
                       {shortAddr(COUNTER_KT1)}
+                    </a>
+                  ) : (
+                    "—"
+                  )}
+                </div>
+              </div>
+              <div className="stat-row">
+                <div className="stat-l">Counter EVM</div>
+                <div className="stat-v">
+                  {wrapperConfigured ? (
+                    <a
+                      className="explorer-link"
+                      href={evmContractExplorerUrl(WRAPPER_ADDRESS)}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={WRAPPER_ADDRESS}
+                    >
+                      {shortAddr(WRAPPER_ADDRESS)}
                     </a>
                   ) : (
                     "—"
@@ -827,7 +1152,13 @@ function App() {
                 ) : null}
               </div>
               {walletConnected && !onExpectedChain ? (
-                <WrongChainHelp onAdd={() => void switchToTezosXNetwork()} evmNetworkDisplayName={TEZOSX_EVM_DISPLAY_NAME} />
+                <WrongChainHelp
+                  onAdd={() => {
+                    pushEventLog(CONFIRM_APP_CHAIN_SWITCH_MSG, "info");
+                    void requestAppChainSwitch().then(() => refreshWalletState());
+                  }}
+                  evmNetworkDisplayName={TEZOSX_EVM_DISPLAY_NAME}
+                />
               ) : null}
 
               <EventLogStrip entries={eventLog} evmTxUrl={evmTxUrl} />
