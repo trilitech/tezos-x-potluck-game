@@ -1,5 +1,5 @@
 {
-  "name": "tezosx-native-atomic-counter-frontend",
+  "name": "xcounter-frontend",
   "private": true,
   "version": "0.0.0",
   "type": "module",

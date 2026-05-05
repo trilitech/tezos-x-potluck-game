@@ -133,10 +133,10 @@ type MichelsonNode = {
 
 type RoundUiState = "connect" | "wrong-net" | "idle" | "play" | "depositing";
 
-function NacCounterMark() {
+function XCounterMark() {
   return (
     <>
-      <span className="brand-name-tz">NAC</span> Counter
+      <span className="brand-name-tz">x</span>Counter
     </>
   );
 }
@@ -711,7 +711,7 @@ function App() {
             </div>
             <div className="brand-lockup">
               <span className="brand-name">
-                <NacCounterMark />
+                <XCounterMark />
               </span>
             </div>
           </div>

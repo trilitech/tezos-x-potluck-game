@@ -1,4 +1,4 @@
-/* NAC Counter UI — layout tokens shared with the xButton frontend.
+/* xCounter UI — layout tokens shared with the xButton frontend.
    Dark, builder-focused. Inter (UI) + JetBrains Mono (logs/data).
 */
 :root {
@@ -140,7 +140,7 @@ body {
   gap: 1px;
 }
 .brand-name { font-weight: 600; letter-spacing: -0.02em; font-size: 15px; line-height: 1; }
-/* Accent on “NAC” in the NAC Counter wordmark */
+/* Accent on “x” in the xCounter wordmark */
 .brand-name-tz {
   background: linear-gradient(135deg, #fff2b0, #e8c048 45%, #b8860b);
   -webkit-background-clip: text;

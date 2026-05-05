@@ -1,6 +1,6 @@
-# Tezos X — NAC counter example
+# xCounter — Tezos X (NAC example)
 
-Minimal **Michelson counter** + **Solidity wrapper** + **React UI** for Tezos X [Native Atomic Composability](https://x.tezos.com/docs/) on Previewnet.
+**xCounter** is a minimal **Michelson counter** + **Solidity wrapper** + **React UI** for Tezos X [Native Atomic Composability](https://x.tezos.com/docs/) on Previewnet.
 
 ## What’s inside
 
