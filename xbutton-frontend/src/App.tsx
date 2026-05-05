@@ -67,7 +67,7 @@ import {
   setSelectedEvmProvider,
   type SelectedEthereumProvider,
 } from "./wallet/selectedEvmProvider";
-import { createWalletFundingHelpers, type WalletState } from "./walletFunding";
+import { createWalletFundingHelpers, formatAirdropSuccessLog, type WalletState } from "./walletFunding";
 
 const tezosXStack = normalizeTezosXNetwork(import.meta.env.VITE_TEZOSX_NETWORK);
 const tezosXPreset = TEZOSX_FRONTEND_PRESETS[tezosXStack];
@@ -137,7 +137,7 @@ const tezktGameOperationsPath =
     : import.meta.env.VITE_TEZKT_GAME_OPERATIONS_PATH?.trim() || gameContract;
 
 const CONFIG = {
-  appName: "Po(tz)Luck",
+  appName: "Potluck",
   stack: tezosXStack,
   evmRpc,
   tezlinkRpc,
@@ -162,8 +162,7 @@ const TEZOSX_EVM_DISPLAY_NAME = evmNetworkDisplayName(CONFIG.stack);
 
 const TEZOS_X_DASHBOARD_URL = tezosXPreset.dashboardUrl;
 const POTZ_DOCS_URL = import.meta.env.VITE_DOCS_URL ?? "https://x.tezos.com/docs/";
-/** Michelson-interface footer link: default to the same Tezos X hub as “Explore Tezos X” (per network preset). */
-const TEZLINK_SITE_URL = import.meta.env.VITE_TEZLINK_SITE_URL ?? tezosXPreset.dashboardUrl;
+const TEZLINK_SITE_URL = import.meta.env.VITE_TEZLINK_SITE_URL ?? tezosXPreset.tezosExplorerBase;
 
 function evmTxUrl(hash: string) {
   const h = hash.startsWith("0x") ? hash : `0x${hash}`;
@@ -920,11 +919,7 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
 }
 
 function PotzLuckMark() {
-  return (
-    <>
-      Po<span className="brand-name-tz">(tz)</span>Luck
-    </>
-  );
+  return <>Potluck</>;
 }
 
 function App() {
@@ -1470,7 +1465,7 @@ function App() {
         kind: "pending",
         message: `Your wallet needs ${stackShortLabel(CONFIG.stack)} USDC or XTZ — requesting an airdrop…`,
       });
-      await requestAirdrop(wallet.address, {
+      const result = await requestAirdrop(wallet.address, {
         xtz: needsXtzAirdrop,
         usdc: needsUsdcAirdrop,
       });
@@ -1479,7 +1474,8 @@ function App() {
       }
       await refreshWalletState(false);
       pushEventLog(
-        airdropDeliveredLogMessage(needsUsdcAirdrop, needsXtzAirdrop, stackShortLabel(CONFIG.stack)),
+        formatAirdropSuccessLog(result, stackShortLabel(CONFIG.stack)) ??
+          airdropDeliveredLogMessage(needsUsdcAirdrop, needsXtzAirdrop, stackShortLabel(CONFIG.stack)),
         "success",
       );
       setAirdropModalState({
@@ -2141,7 +2137,7 @@ function App() {
       setDepositFxId((id) => id + 1);
       setActionState({
         kind: "success",
-        message: `Done. You deposited ${CONFIG.pressAmount} USDC into the game pot. Po(tz)Luck to you!`,
+        message: `Done. You deposited ${CONFIG.pressAmount} USDC into the game pot. Potluck to you!`,
         txHash: tx.hash,
         tezosOpsUrl,
         steps: completeFlowSteps(depositSteps),
