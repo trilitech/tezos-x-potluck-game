@@ -115,7 +115,7 @@ const tezktGameOperationsPath =
     : import.meta.env.VITE_TEZKT_GAME_OPERATIONS_PATH?.trim() || gameContract;
 
 const CONFIG = {
-  appName: "Pot(z)Luck",
+  appName: "Po(tz)Luck",
   stack: tezosXStack,
   evmRpc,
   tezlinkRpc,
@@ -1348,7 +1348,7 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
 function PotzLuckMark() {
   return (
     <>
-      Pot<span className="brand-name-tz">(z)</span>Luck
+      Po<span className="brand-name-tz">(tz)</span>Luck
     </>
   );
 }
@@ -2564,7 +2564,7 @@ function App() {
       setDepositFxId((id) => id + 1);
       setActionState({
         kind: "success",
-        message: `Done. You deposited ${CONFIG.pressAmount} USDC into the game pot. Pot(z)Luck to you!`,
+        message: `Done. You deposited ${CONFIG.pressAmount} USDC into the game pot. Po(tz)Luck to you!`,
         txHash: tx.hash,
         tezosOpsUrl,
         steps: completeFlowSteps(depositSteps),
