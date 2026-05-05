@@ -15,7 +15,6 @@ const TOUR_STEPS = [
   { id: "oneness" as const, label: "EVM and Michelson as one" },
 ];
 
-/** Label above tour bullet lists (semicolon, not colon). */
 const TOUR_TLDR_LABEL = "TL;DR" as const;
 
 function Progress({ idx, total }: { idx: number; total: number }) {

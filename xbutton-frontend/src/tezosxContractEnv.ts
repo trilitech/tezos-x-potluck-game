@@ -1,13 +1,11 @@
 import type { TezosXNetworkName } from "./tezosxNetworkPresets";
 
-/** Repo-default Previewnet deployments; override with `VITE_PREVIEWNET_*` only if you redeploy. */
 const HARDCODED_PREVIEWNET = {
   usdc: "0xd77420F73B4612a7A99DBA8c2AFd30a1886b0344",
   pot: "0x92E791DF3Dd5A8704f0e7d9B3003A0627d95d017",
   game: "KT1Dj2B1Wmz3vqaBzHhEZpjAhXu7CrQBEiy1",
 } as const;
 
-/** Repo-default testnet deployments; override with `VITE_USDC_ADDRESS` / `VITE_POT_ADDRESS` / `VITE_GAME_CONTRACT`. */
 const HARDCODED_TESTNET = {
   usdc: "0x257De96BE880EF01894304701C4aF4ef08FCbF9a",
   pot: "0x1B3d06699aBE347D3b835D0DA32591B4644730C0",

@@ -11,12 +11,14 @@ import {
   PotFooter,
   PotzLuckPotIcon,
   RecentSessionsClaimInfo,
+} from "./potzluckUi";
+import {
   createEventLogEntryId,
   isPayoutSuccessLogMessage,
   shortAddr,
   type EventLogEntry,
   type EventLogTone,
-} from "./potzluckUi";
+} from "./potzluckLog";
 import { evmNetworkDisplayName, stackShortLabel, walletAddNetworkHelpRabby } from "./tezosxNetwork";
 import { resolveFrontendContracts } from "./tezosxContractEnv";
 import {
@@ -24,6 +26,33 @@ import {
   normalizeTezosXNetwork,
   TEZOSX_FRONTEND_PRESETS,
 } from "./tezosxNetworkPresets";
+import {
+  addressesEqual,
+  compareSessionIdsDesc,
+  formatClockDuration,
+  formatEndedAgo,
+  getClaimTargetSession,
+  getDuplicateClaimTargetForWalletSession,
+  getPendingClaimRequestedSession,
+  hasCurrentClaimInFlight,
+  isClaimSettled,
+  michelsonPotHasFunds,
+  potInfoForClaimTarget,
+  type ClaimTargetSession,
+  type GameState,
+} from "./gameSessions";
+import {
+  getPayoutStorageKeys,
+  markPayoutSessionCompletedInStorage,
+  PASSIVE_CLAIM_WAIT_LOG_KEY_PREFIX,
+  readPayoutPotMeta,
+  readStoredEventLog,
+  readStringIdSet,
+  type PayoutPotMeta,
+  writePayoutPotMeta,
+  writeStoredEventLog,
+  writeStringIdSet,
+} from "./potzluckStorage";
 import { WalletPickerModal } from "./WalletPickerModal";
 import {
   clearSavedWalletRdns,
@@ -38,11 +67,11 @@ import {
   setSelectedEvmProvider,
   type SelectedEthereumProvider,
 } from "./wallet/selectedEvmProvider";
+import { createWalletFundingHelpers, type WalletState } from "./walletFunding";
 
 const tezosXStack = normalizeTezosXNetwork(import.meta.env.VITE_TEZOSX_NETWORK);
 const tezosXPreset = TEZOSX_FRONTEND_PRESETS[tezosXStack];
 
-/** Previewnet: canonical URLs/chain from preset only (ignores stale testnet `VITE_*` overrides). */
 const evmRpc =
   tezosXStack === "previewnet"
     ? tezosXPreset.evmRpc
@@ -69,7 +98,6 @@ const { usdc: usdcAddress, pot: potAddress, game: gameContract, crac: cracPrecom
 const usdcDecimals = Number(import.meta.env.VITE_USDC_DECIMALS ?? "6");
 const pressAmount = import.meta.env.VITE_PRESS_AMOUNT ?? "1";
 const pollIntervalMs = Number(import.meta.env.VITE_POLL_INTERVAL_MS ?? "5000");
-/** Max time to wait for Michelson-side pot to reflect the deposit after EVM confirmation (relayer → cross-runtime). Default 40s. */
 const gameStateWaitTimeoutMs = (() => {
   const n = Number(import.meta.env.VITE_GAME_STATE_WAIT_TIMEOUT_MS ?? "40000");
   return Number.isFinite(n) && n > 0 ? n : 40000;
@@ -89,11 +117,6 @@ function formatPotPayoutSuccessMessage(sessionId: string, potDisplay: string | n
   return `${head} USDC was sent from the pot to your wallet. Click Play to keep playing!`;
 }
 
-/** SessionStorage keys cleared in `markPayoutSessionCompletedInStorage`. */
-const RELAYER_PROGRESS_LOG_KEY_PREFIX = "potzluck_relayer_progress_v1_";
-const PASSIVE_CLAIM_WAIT_LOG_KEY_PREFIX = "potzluck_passive_claim_wait_v1_";
-
-/** EVM log scan depth when resolving PaidOut tx after claim (escrow → winner). */
 const PAYOUT_LOG_LOOKBACK_BLOCKS = 4000;
 const AIRDROP_USDC_AMOUNT = "5";
 const AIRDROP_XTZ_AMOUNT = "1";
@@ -108,7 +131,6 @@ const tzktApiUrl =
       tezosXPreset.tzktApiUrl ||
       tezlinkRpc.replace(/\/rpc\/tezlink\/?$/, "") + "/tzkt";
 
-/** Path segment for `{VITE_TEZOS_EXPLORER_BASE}/{path}/operations` (Michelson-interface tzkt). Defaults to game KT1; use rollup-style id if your explorer requires it. */
 const tezktGameOperationsPath =
   tezosXStack === "previewnet"
     ? gameContract
@@ -142,142 +164,13 @@ const TEZOS_X_DASHBOARD_URL = tezosXPreset.dashboardUrl;
 const POTZ_DOCS_URL = import.meta.env.VITE_DOCS_URL ?? "https://tezos.com/tezos-x/";
 const TEZLINK_SITE_URL = import.meta.env.VITE_TEZLINK_SITE_URL ?? "https://tezlink.tezos.com/";
 
-function airdropDeliveredLogMessage(usdc: boolean, xtz: boolean): string {
-  const net = stackShortLabel(CONFIG.stack);
-  if (usdc && xtz) {
-    return `${net} airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC and ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
-  }
-  if (usdc) return `${net} airdrop complete: ${AIRDROP_USDC_AMOUNT} USDC sent to your wallet.`;
-  return `${net} airdrop complete: ${AIRDROP_XTZ_AMOUNT} XTZ sent to your wallet.`;
-}
-
-function formatAirdropError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (message.startsWith("AIRDROP_FAILED:")) {
-    return message.replace("AIRDROP_FAILED:", "").trim() || "Airdrop failed.";
-  }
-  const net = stackShortLabel(CONFIG.stack);
-  return `We couldn't send ${net} funds right now. Please try again in a moment.`;
-}
-
 function evmTxUrl(hash: string) {
   const h = hash.startsWith("0x") ? hash : `0x${hash}`;
   return `${CONFIG.evmExplorerUrl}/tx/${h}`;
 }
 
-const EVENT_LOG_STORAGE_KEY = "potzluck_event_log_v1";
-const MAX_STORED_LOG_ENTRIES = 25;
-
-function readStoredEventLog(): EventLogEntry[] {
-  if (typeof sessionStorage === "undefined") return [];
-  try {
-    const raw = sessionStorage.getItem(EVENT_LOG_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(
-        (e): e is EventLogEntry =>
-          e != null &&
-          typeof e === "object" &&
-          typeof (e as EventLogEntry).id === "string" &&
-          typeof (e as EventLogEntry).msg === "string" &&
-          ((e as EventLogEntry).tone === "info" ||
-            (e as EventLogEntry).tone === "success" ||
-            (e as EventLogEntry).tone === "error"),
-      )
-      .map((e) => {
-        const x = e as EventLogEntry & { relatedUrl?: unknown; relatedLabel?: unknown };
-        return {
-          ...e,
-          ...(typeof x.relatedUrl === "string" ? { relatedUrl: x.relatedUrl } : {}),
-          ...(typeof x.relatedLabel === "string" ? { relatedLabel: x.relatedLabel } : {}),
-        };
-      })
-      .slice(-MAX_STORED_LOG_ENTRIES);
-  } catch {
-    return [];
-  }
-}
-
-function writeStoredEventLog(entries: EventLogEntry[]) {
-  try {
-    sessionStorage.setItem(EVENT_LOG_STORAGE_KEY, JSON.stringify(entries.slice(-MAX_STORED_LOG_ENTRIES)));
-  } catch {
-    /* quota / private mode */
-  }
-}
-
-const PAYOUT_WAIT_IDS_KEY = "potzluck_payout_wait_ids_v1";
-const PAYOUT_DONE_IDS_KEY = "potzluck_payout_done_ids_v1";
-const PAYOUT_POT_META_KEY = "potzluck_payout_pot_meta_v1";
-
-type PayoutPotMeta = Record<string, { potRaw: string; potDisplay: string }>;
-
-function readStringIdSet(key: string): Set<string> {
-  if (typeof sessionStorage === "undefined") return new Set();
-  try {
-    const raw = sessionStorage.getItem(key);
-    if (!raw) return new Set();
-    const a = JSON.parse(raw) as unknown;
-    if (!Array.isArray(a)) return new Set();
-    return new Set(a.filter((x): x is string => typeof x === "string"));
-  } catch {
-    return new Set();
-  }
-}
-
-function writeStringIdSet(key: string, ids: Set<string>) {
-  try {
-    sessionStorage.setItem(key, JSON.stringify([...ids]));
-  } catch {
-    /* ignore */
-  }
-}
-
-function readPayoutPotMeta(): PayoutPotMeta {
-  if (typeof sessionStorage === "undefined") return {};
-  try {
-    const raw = sessionStorage.getItem(PAYOUT_POT_META_KEY);
-    if (!raw) return {};
-    const o = JSON.parse(raw) as unknown;
-    if (!o || typeof o !== "object" || Array.isArray(o)) return {};
-    return o as PayoutPotMeta;
-  } catch {
-    return {};
-  }
-}
-
-function writePayoutPotMeta(meta: PayoutPotMeta) {
-  try {
-    sessionStorage.setItem(PAYOUT_POT_META_KEY, JSON.stringify(meta));
-  } catch {
-    /* ignore */
-  }
-}
-
-/** After an interactive claim flow logs payout success, skip duplicate completion from the payout notifier effect. */
-function markPayoutSessionCompletedInStorage(sessionId: string) {
-  if (typeof sessionStorage === "undefined") return;
-  const w = readStringIdSet(PAYOUT_WAIT_IDS_KEY);
-  w.delete(sessionId);
-  writeStringIdSet(PAYOUT_WAIT_IDS_KEY, w);
-  const d = readStringIdSet(PAYOUT_DONE_IDS_KEY);
-  d.add(sessionId);
-  writeStringIdSet(PAYOUT_DONE_IDS_KEY, d);
-  const meta = readPayoutPotMeta();
-  if (meta[sessionId]) {
-    const next = { ...meta };
-    delete next[sessionId];
-    writePayoutPotMeta(next);
-  }
-  try {
-    sessionStorage.removeItem(`${RELAYER_PROGRESS_LOG_KEY_PREFIX}${sessionId}`);
-    sessionStorage.removeItem(`${PASSIVE_CLAIM_WAIT_LOG_KEY_PREFIX}${sessionId}`);
-  } catch {
-    /* ignore */
-  }
-}
+const { payoutWaitIdsKey: PAYOUT_WAIT_IDS_KEY, payoutDoneIdsKey: PAYOUT_DONE_IDS_KEY } =
+  getPayoutStorageKeys();
 
 /** Michelson-interface tzkt: contract (or rollup) operations list — e.g. `…/BLS2…/operations` or `…/KT1…/operations`. */
 function tezosGameOperationsUrl(): string {
@@ -351,6 +244,31 @@ const PRESS_AMOUNT_UNITS = ethers.parseUnits(CONFIG.pressAmount, CONFIG.usdcDeci
  */
 const USDC_ESCROW_APPROVE_CAP = ethers.MaxUint256;
 
+const walletFunding = createWalletFundingHelpers({
+  chainId: CONFIG.chainId,
+  pressAmount: CONFIG.pressAmount,
+  pressAmountUnits: PRESS_AMOUNT_UNITS,
+  airdropApiUrl,
+  airdropUsdcAmount: AIRDROP_USDC_AMOUNT,
+  airdropXtzAmount: AIRDROP_XTZ_AMOUNT,
+  relayerRdns: TEZOS_X_RELAYER_RDNS,
+  relayerWalletKeyPrefix: RELAYER_WALLET_KEY_PREFIX,
+  relayerXtzAirdropKeyPrefix: RELAYER_XTZ_AIRDROP_KEY_PREFIX,
+});
+
+const {
+  airdropDeliveredLogMessage,
+  formatAirdropError,
+  getInsufficientPlayFundsEventLogMessage,
+  hasRelayerXtzAirdropFlag,
+  isRelayerWalletLocallyMarked,
+  isTezosRelayerProviderLike,
+  markRelayerWallet,
+  markRelayerXtzAirdropped,
+  refreshWalletUntilPlayBalancesVisible,
+  requestAirdrop,
+} = walletFunding;
+
 type GameStorageJsonNode = {
   prim?: string;
   args?: GameStorageJsonNode[];
@@ -358,250 +276,6 @@ type GameStorageJsonNode = {
   int?: string;
   string?: string;
 };
-
-type GameState = {
-  currentSessionId: string;
-  /** Michelson-side identity for the last depositor - matched against Tezos.get_sender on claim. */
-  lastPlayerTezos: string | null;
-  /** Raw 20-byte EVM address of the last depositor, stored directly in contract storage. */
-  lastPlayerAddress: string | null;
-  potRaw: string;
-  potDisplay: string;
-  sessionEnd: number;
-  claimed: boolean;
-  pendingSessions: Array<{
-    sessionId: string;
-    winnerTezos: string | null;
-    winnerAddress: string | null;
-    potRaw: string;
-    potDisplay: string;
-    sessionEnd: number;
-    claimRequested: boolean;
-  }>;
-  fetchedAt: number;
-};
-
-type WalletState = {
-  address: string | null;
-  chainId: bigint | null;
-  usdcBalance: string | null;
-  usdcAllowance: bigint | null;
-  usdcBalanceRaw: bigint | null;
-  xtzBalanceRaw: bigint | null;
-};
-
-type ClaimTargetSession = {
-  sessionId: string;
-  source: "current" | "pending";
-  winnerAddress: string | null;
-};
-
-function addressesEqual(left: string | null | undefined, right: string | null | undefined): boolean {
-  return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
-}
-
-/** Michelson storage pot for the session (raw token units); claim only when deposits built a non-zero pot. */
-function michelsonPotHasFunds(potRaw: string | undefined | null): boolean {
-  if (potRaw == null || potRaw === "") return false;
-  try {
-    return BigInt(potRaw) > 0n;
-  } catch {
-    return false;
-  }
-}
-
-/** Pot shown in Michelson-interface storage for the session being claimed (current round vs pending map). */
-function potInfoForClaimTarget(
-  gameState: GameState | null,
-  target: ClaimTargetSession,
-): { potDisplay: string; potRaw: string } | null {
-  if (!gameState) return null;
-  if (target.source === "pending") {
-    const row = gameState.pendingSessions.find((s) => s.sessionId === target.sessionId);
-    return row ? { potDisplay: row.potDisplay, potRaw: row.potRaw } : null;
-  }
-  return { potDisplay: gameState.potDisplay, potRaw: gameState.potRaw };
-}
-
-function getClaimTargetSession(
-  gameState: GameState | null,
-  walletAddress: string | null,
-  nowSeconds: number,
-): ClaimTargetSession | null {
-  if (!gameState || !walletAddress) return null;
-
-  if (
-    gameState.sessionEnd <= nowSeconds &&
-    !gameState.claimed &&
-    addressesEqual(gameState.lastPlayerAddress, walletAddress) &&
-    michelsonPotHasFunds(gameState.potRaw)
-  ) {
-    return {
-      sessionId: gameState.currentSessionId,
-      source: "current",
-      winnerAddress: gameState.lastPlayerAddress,
-    };
-  }
-
-  const pending = gameState.pendingSessions.find(
-    (session) =>
-      !session.claimRequested &&
-      addressesEqual(session.winnerAddress, walletAddress) &&
-      michelsonPotHasFunds(session.potRaw),
-  );
-  if (!pending) return null;
-
-  return {
-    sessionId: pending.sessionId,
-    source: "pending",
-    winnerAddress: pending.winnerAddress,
-  };
-}
-
-function getPendingClaimRequestedSession(
-  gameState: GameState | null,
-  walletAddress: string | null,
-): ClaimTargetSession | null {
-  if (!gameState || !walletAddress) return null;
-  const pending = gameState.pendingSessions.find(
-    (session) => session.claimRequested && addressesEqual(session.winnerAddress, walletAddress),
-  );
-  if (!pending) return null;
-  return {
-    sessionId: pending.sessionId,
-    source: "pending",
-    winnerAddress: pending.winnerAddress,
-  };
-}
-
-function hasCurrentClaimInFlight(
-  gameState: GameState | null,
-  walletAddress: string | null,
-  nowSeconds: number,
-): boolean {
-  return Boolean(
-    gameState &&
-      walletAddress &&
-      gameState.sessionEnd <= nowSeconds &&
-      gameState.claimed &&
-      addressesEqual(gameState.lastPlayerAddress, walletAddress),
-  );
-}
-
-/** Claim already submitted for this session id (Michelson-interface waiting on relayer). */
-function getDuplicateClaimTargetForWalletSession(
-  gameState: GameState | null,
-  walletAddress: string | null,
-  sessionId: string,
-  nowSeconds: number,
-): ClaimTargetSession | null {
-  if (!gameState || !walletAddress) return null;
-
-  const pending = gameState.pendingSessions.find(
-    (s) =>
-      s.sessionId === sessionId &&
-      s.claimRequested &&
-      addressesEqual(s.winnerAddress, walletAddress),
-  );
-  if (pending) {
-    return { sessionId, source: "pending", winnerAddress: pending.winnerAddress };
-  }
-
-  if (
-    gameState.currentSessionId === sessionId &&
-    gameState.sessionEnd <= nowSeconds &&
-    gameState.claimed &&
-    addressesEqual(gameState.lastPlayerAddress, walletAddress)
-  ) {
-    return { sessionId, source: "current", winnerAddress: gameState.lastPlayerAddress };
-  }
-
-  return null;
-}
-
-function isClaimSettled(nextState: GameState, target: ClaimTargetSession): boolean {
-  const stillPending = nextState.pendingSessions.some((session) => session.sessionId === target.sessionId);
-  if (target.source === "pending") {
-    return !stillPending;
-  }
-
-  if (nextState.currentSessionId === target.sessionId) {
-    return !nextState.claimed && BigInt(nextState.potRaw) === 0n && nextState.lastPlayerAddress == null;
-  }
-
-  return !stillPending;
-}
-
-function compareSessionIdsDesc(left: { sessionId: string }, right: { sessionId: string }): number {
-  const delta = BigInt(right.sessionId) - BigInt(left.sessionId);
-  if (delta > 0n) return 1;
-  if (delta < 0n) return -1;
-  return 0;
-}
-
-function relayerWalletStorageKey(prefix: string, chainIdLike: bigint | null, address: string | null): string | null {
-  if (!chainIdLike || !address) return null;
-  return `${prefix}:${chainIdLike.toString()}:${address.toLowerCase()}`;
-}
-
-function readLocalFlag(key: string | null): boolean {
-  if (!key || typeof window === "undefined") return false;
-  try {
-    return localStorage.getItem(key) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function writeLocalFlag(key: string | null, value: boolean) {
-  if (!key || typeof window === "undefined") return;
-  try {
-    if (value) localStorage.setItem(key, "1");
-    else localStorage.removeItem(key);
-  } catch {
-    /* ignore */
-  }
-}
-
-function isTezosRelayerProviderLike(
-  provider: SelectedEthereumProvider | null | undefined,
-  rdns: string | null | undefined,
-): boolean {
-  const maybe = provider as { isTezosXRelayer?: boolean } | null | undefined;
-  return Boolean(maybe?.isTezosXRelayer) || rdns === TEZOS_X_RELAYER_RDNS;
-}
-
-function isRelayerWalletLocallyMarked(wallet: WalletState): boolean {
-  return readLocalFlag(relayerWalletStorageKey(RELAYER_WALLET_KEY_PREFIX, wallet.chainId, wallet.address));
-}
-
-function hasRelayerXtzAirdropFlag(wallet: WalletState): boolean {
-  return readLocalFlag(relayerWalletStorageKey(RELAYER_XTZ_AIRDROP_KEY_PREFIX, wallet.chainId, wallet.address));
-}
-
-function markRelayerWallet(address: string | null, chainIdLike: bigint | null) {
-  writeLocalFlag(relayerWalletStorageKey(RELAYER_WALLET_KEY_PREFIX, chainIdLike, address), true);
-}
-
-function markRelayerXtzAirdropped(address: string | null, chainIdLike: bigint | null) {
-  writeLocalFlag(relayerWalletStorageKey(RELAYER_XTZ_AIRDROP_KEY_PREFIX, chainIdLike, address), true);
-}
-
-/** When not eligible for airdrop (or airdrop skipped), warn if play is still impossible: stake in USDC + XTZ for gas. */
-function getInsufficientPlayFundsEventLogMessage(w: WalletState): string | null {
-  if (!w.address || w.chainId !== CONFIG.chainId) return null;
-  if (w.usdcBalanceRaw == null || w.xtzBalanceRaw == null) return null;
-  const shortOnUsdc = w.usdcBalanceRaw < PRESS_AMOUNT_UNITS;
-  const shortOnXtz = w.xtzBalanceRaw === 0n && !isRelayerWalletLocallyMarked(w);
-  if (!shortOnUsdc && !shortOnXtz) return null;
-  if (shortOnUsdc && shortOnXtz) {
-    return `You don't have enough USDC or XTZ to play. You need at least ${CONFIG.pressAmount} USDC and a little XTZ for gas on this network.`;
-  }
-  if (shortOnUsdc) {
-    return `You don't have enough USDC to play — you need at least ${CONFIG.pressAmount} USDC for each deposit.`;
-  }
-  return "You don't have enough XTZ for gas. Add a little native XTZ on this network so you can sign transactions, then try Play again.";
-}
 
 type FlowStepStatus = "upcoming" | "active" | "done";
 
@@ -813,19 +487,13 @@ type EthereumProvider = SelectedEthereumProvider;
 
 const TEZOS_X_EVM_WALLET_HINT = `Your wallet does not look like it is on ${TEZOSX_EVM_DISPLAY_NAME} yet. Add or switch to that network, then try again.`;
 
-/** Logged directly to the event strip; action→log mirror skips this prefix to avoid duplicates. */
 const CLAIM_MISMATCH_LOG_PREFIX = "Only the last person who pressed can claim.";
 
 const CONNECT_WALLET_CHECKING_MSG = "Connecting your wallet and checking your Tezos X balances…";
 
-/**
- * Shown while polling for Michelson pot after EVM deposit. The trailing `(Ns)` updates in place in the event log
- * (one line), not as a new entry each tick.
- */
 const DEPOSIT_MICHELSON_SYNC_LOG_PREFIX =
   "Calling the NAC gateway to update the game pot's Michelson-interface storage…";
 
-/** Shown while `wallet_switchEthereumChain` / add network is in progress. */
 const CONFIRM_APP_CHAIN_SWITCH_MSG = `Confirm switching to ${TEZOSX_EVM_DISPLAY_NAME} in your wallet…`;
 
 function isUserRejectedWalletError(error: unknown): boolean {
@@ -859,7 +527,6 @@ function getWalletRpcErrorCode(error: unknown): number | undefined {
   );
 }
 
-/** Unrecognized / not-yet-added chain (EIP-1193: 4902), including wrapped provider shapes. */
 function isUnrecognizedChainError(error: unknown): boolean {
   if (getWalletRpcErrorCode(error) === 4902) return true;
   if (getWalletRpcErrorCode(error) === -32603) {
@@ -877,7 +544,6 @@ function isUnrecognizedChainError(error: unknown): boolean {
   return msg.includes("unrecognized") && msg.includes("chain");
 }
 
-/** Rabby: internal prefs missing `defaultChain` when the site chain isn’t in the wallet registry (see connect path). */
 function isWalletNetworkSetupError(error: unknown): boolean {
   if (isUserRejectedWalletError(error)) return false;
   const e = error as { message?: string; data?: { originalError?: { message?: string } } };
@@ -895,7 +561,6 @@ async function readChainIdFromProvider(provider: ethers.BrowserProvider): Promis
   return BigInt(hex);
 }
 
-/** Ethers BAD_DATA / empty `0x` when reading a contract - usually wrong chain or token not deployed there. */
 function isBadContractRpcResultError(error: unknown): boolean {
   const err = error as { code?: string; message?: string; shortMessage?: string };
   const text = `${err?.code ?? ""} ${err?.message ?? ""} ${err?.shortMessage ?? ""}`.toLowerCase();
@@ -910,10 +575,6 @@ function formatTokenAmount(value: bigint, decimals: number) {
   const formatted = ethers.formatUnits(value, decimals);
   return formatted.replace(/\.?0+$/, "");
 }
-
-// ---------------------------------------------------------------------------
-// Tezos address helpers (browser-side, async Web Crypto SHA-256)
-// ---------------------------------------------------------------------------
 
 const TEZOS_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -1153,94 +814,6 @@ async function fetchPayoutTxHash(
 
 async function sleep(ms: number) {
   await new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-/** After airdrop, USDC/XTZ reads can lag; re-fetch until play looks possible or we time out. */
-async function refreshWalletUntilPlayBalancesVisible(
-  willAirdrop: boolean,
-  refresh: () => Promise<WalletState>,
-): Promise<WalletState> {
-  let w = await refresh();
-  if (!willAirdrop) {
-    return w;
-  }
-  for (let i = 0; i < 10; i++) {
-    if (!getInsufficientPlayFundsEventLogMessage(w)) {
-      return w;
-    }
-    await sleep(400);
-    w = await refresh();
-  }
-  return w;
-}
-
-function formatClockDuration(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-}
-
-/** How long a session has been over (all units in whole seconds). No date library—keeps bundle small. */
-function formatEndedAgo(totalSeconds: number): string {
-  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
-    return "—";
-  }
-  if (totalSeconds < 60) {
-    return `Ended ${totalSeconds}s ago`;
-  }
-  if (totalSeconds < 3600) {
-    return `Ended ${Math.floor(totalSeconds / 60)}m ago`;
-  }
-  if (totalSeconds < 86400) {
-    const h = Math.floor(totalSeconds / 3600);
-    const m = Math.floor((totalSeconds % 3600) / 60);
-    return m > 0 ? `Ended ${h}h ${m}m ago` : `Ended ${h}h ago`;
-  }
-  const days = Math.floor(totalSeconds / 86400);
-  if (totalSeconds < 86400 * 7) {
-    const h = Math.floor((totalSeconds % 86400) / 3600);
-    return h > 0 ? `Ended ${days}d ${h}h ago` : `Ended ${days}d ago`;
-  }
-  if (days < 30) {
-    return `Ended ${days}d ago`;
-  }
-  if (totalSeconds < 86400 * 365 * 5) {
-    return `Ended ${Math.max(1, Math.floor(totalSeconds / (86400 * 7)))}w+ ago`;
-  }
-  return "Ended a long time ago";
-}
-
-async function requestAirdrop(
-  address: string,
-  opts: { usdc: boolean; xtz: boolean },
-): Promise<void> {
-  if (!airdropApiUrl) {
-    throw new Error("AIRDROP_NOT_CONFIGURED");
-  }
-
-  const response = await fetch(airdropApiUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      walletAddress: address,
-      usdc: opts.usdc,
-      xtz: opts.xtz,
-      usdcAmount: opts.usdc ? AIRDROP_USDC_AMOUNT : undefined,
-      xtzAmount: opts.xtz ? AIRDROP_XTZ_AMOUNT : undefined,
-    }),
-  });
-
-  if (!response.ok) {
-    let detail = "";
-    try {
-      detail = await response.text();
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail.trim() ? `AIRDROP_FAILED:${detail.trim()}` : `AIRDROP_FAILED:${response.status}`);
-  }
 }
 
 function collectErrorText(error: unknown): string {
@@ -1615,7 +1188,7 @@ function App() {
     if (!gameState || !walletState.address) return;
     const addr = walletState.address;
 
-    let waitSet = readStringIdSet(PAYOUT_WAIT_IDS_KEY);
+    const waitSet = readStringIdSet(PAYOUT_WAIT_IDS_KEY);
     const doneSet = readStringIdSet(PAYOUT_DONE_IDS_KEY);
     let meta = readPayoutPotMeta();
 
@@ -1904,7 +1477,10 @@ function App() {
         markRelayerXtzAirdropped(wallet.address, wallet.chainId);
       }
       await refreshWalletState(false);
-      pushEventLog(airdropDeliveredLogMessage(needsUsdcAirdrop, needsXtzAirdrop), "success");
+      pushEventLog(
+        airdropDeliveredLogMessage(needsUsdcAirdrop, needsXtzAirdrop, stackShortLabel(CONFIG.stack)),
+        "success",
+      );
       setAirdropModalState({
         open: true,
         xtz: needsXtzAirdrop,
@@ -1912,7 +1488,7 @@ function App() {
       });
       return { willAirdrop: true, needsUsdc: needsUsdcAirdrop, needsXtz: needsXtzAirdrop };
     },
-    [refreshWalletState, pushEventLog, CONFIG.stack],
+    [refreshWalletState, pushEventLog],
   );
 
   useEffect(() => {
@@ -2126,7 +1702,7 @@ function App() {
       await runConnectCore();
     } catch (error) {
       if (error instanceof Error && (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))) {
-        setActionState({ kind: "error", message: formatAirdropError(error) });
+        setActionState({ kind: "error", message: formatAirdropError(error, stackShortLabel(CONFIG.stack)) });
       } else if (isWalletNetworkSetupError(error)) {
         pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
         setActionState({ kind: "error", message: TEZOS_X_EVM_WALLET_HINT });
@@ -2150,7 +1726,7 @@ function App() {
         await runConnectCore();
       } catch (error) {
         if (error instanceof Error && (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))) {
-          setActionState({ kind: "error", message: formatAirdropError(error) });
+          setActionState({ kind: "error", message: formatAirdropError(error, stackShortLabel(CONFIG.stack)) });
         } else if (isWalletNetworkSetupError(error)) {
           pushEventLog(TEZOS_X_EVM_WALLET_HINT, "error");
           setActionState({ kind: "error", message: TEZOS_X_EVM_WALLET_HINT });
@@ -2329,7 +1905,7 @@ function App() {
       await runAfterNetworkSwitchToTezosX();
     } catch (error) {
       if (error instanceof Error && (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))) {
-        setActionState({ kind: "error", message: formatAirdropError(error) });
+        setActionState({ kind: "error", message: formatAirdropError(error, stackShortLabel(CONFIG.stack)) });
       } else {
         throw error;
       }
@@ -2470,7 +2046,7 @@ function App() {
             error instanceof Error &&
             (error.message === "AIRDROP_NOT_CONFIGURED" || error.message.startsWith("AIRDROP_FAILED:"))
           ) {
-            setActionState({ kind: "error", message: formatAirdropError(error) });
+            setActionState({ kind: "error", message: formatAirdropError(error, stackShortLabel(CONFIG.stack)) });
           } else {
             setActionState({
               kind: "error",
@@ -3033,7 +2609,7 @@ function App() {
     setShellView("game");
   }, []);
 
-  const onPotClick = useCallback(async () => {
+  const onPotClick = async () => {
     if (potUiState === "connect") {
       await connectWallet();
       return;
@@ -3093,7 +2669,7 @@ function App() {
         setIsStartingSession(false);
       }
     }
-  }, [potUiState, connectWallet, switchNetwork, startNewSession, pressButton, waitForActiveRound]);
+  };
 
   const potCopy = useMemo(() => {
     const userIsLastDepositor =

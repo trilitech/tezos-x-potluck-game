@@ -1,6 +1,5 @@
 export type TezosXNetworkName = "testnet" | "previewnet";
 
-/** Canonical public endpoints and chain id per stack. */
 export const TEZOSX_FRONTEND_PRESETS: Record<
   TezosXNetworkName,
   {
@@ -46,7 +45,6 @@ export function normalizeTezosXNetwork(
   return fallback;
 }
 
-/** Static lines for the “Network details” modal (demo testnet facts vs public Previewnet identifiers). */
 const TEZOSX_NETWORK_MODAL_META: Record<
   TezosXNetworkName,
   {
@@ -89,7 +87,6 @@ export type NetworkInfoModalRuntime = {
   dashboardUrl: string;
 };
 
-/** Rows for `NetworkInfoModal` + dashboard link; switches layout for Previewnet vs demo testnet. */
 export function buildNetworkInfoModalRows(
   stack: TezosXNetworkName,
   r: NetworkInfoModalRuntime,
