@@ -352,7 +352,7 @@ body {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr) 220px;
   gap: 14px;
-  align-items: center;
+  align-items: stretch;
   min-height: 0;
 }
 
@@ -361,9 +361,10 @@ body {
   display: flex; flex-direction: column; gap: 18px;
   padding: 4px 0;
   max-width: none;
-  align-self: start;
   padding-top: 36px;
   grid-column: 1;
+  min-height: 0;
+  height: 100%;
 }
 .stat-row { display: flex; flex-direction: column; gap: 4px; }
 .stat-row.hero .stat-l { font-size: 12px; }
@@ -405,12 +406,26 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .session-history-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+.session-history-heading-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.session-history-heading-btn:hover .session-history-h {
+  color: var(--fg-1);
 }
 .session-history-h {
   font-size: 12px;
@@ -481,6 +496,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.session-history-list::-webkit-scrollbar { width: 8px; }
+.session-history-list::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.14);
+  border-radius: 999px;
 }
 .session-history-item {
   padding: 10px 12px;

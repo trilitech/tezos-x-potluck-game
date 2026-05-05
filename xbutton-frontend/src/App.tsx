@@ -3068,7 +3068,13 @@ function App() {
               </div>
               <div className="session-history">
                 <div className="session-history-head">
-                  <h3 className="session-history-h">Recent games</h3>
+                  <button
+                    type="button"
+                    className="session-history-heading-btn"
+                    onClick={goToSessions}
+                  >
+                    <h3 className="session-history-h">Recent games</h3>
+                  </button>
                   <RecentSessionsClaimInfo walletConnected={Boolean(walletState.address)} />
                 </div>
                 {sidebarPendingSessions.length > 0 ? (
