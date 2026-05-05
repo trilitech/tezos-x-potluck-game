@@ -11,7 +11,6 @@ package-lock.json
 # Local-only; not part of this repository
 evm-airdrop-app/
 instant-confirmations-demo/
-tezosx-native-atomic-counter-example/
 
 tezosx-tezlink/
 

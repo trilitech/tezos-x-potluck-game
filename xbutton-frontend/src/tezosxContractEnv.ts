@@ -12,7 +12,7 @@ const HARDCODED_TESTNET = {
   game: "KT1JKKK8tgWSsfz9yVxmffSEVahvSzncvvKZ",
 } as const;
 
-const DEFAULT_CRAC = "0xff00000000000000000000000000000000000007";
+const DEFAULT_NAC_PRECOMPILE = "0xff00000000000000000000000000000000000007";
 
 function firstNonEmpty(...vals: (string | undefined)[]): string | undefined {
   for (const v of vals) {
@@ -31,18 +31,18 @@ function firstNonEmpty(...vals: (string | undefined)[]): string | undefined {
 export function resolveFrontendContracts(
   stack: TezosXNetworkName,
   env: ImportMetaEnv,
-): { usdc: string; pot: string; game: string; crac: string } {
-  const crac =
+): { usdc: string; pot: string; game: string; nac: string } {
+  const nac =
     stack === "previewnet"
-      ? firstNonEmpty(env.VITE_PREVIEWNET_CRAC_PRECOMPILE, env.VITE_CRAC_PRECOMPILE) ?? DEFAULT_CRAC
-      : firstNonEmpty(env.VITE_TESTNET_CRAC_PRECOMPILE, env.VITE_CRAC_PRECOMPILE) ?? DEFAULT_CRAC;
+      ? firstNonEmpty(env.VITE_PREVIEWNET_CRAC_PRECOMPILE, env.VITE_CRAC_PRECOMPILE) ?? DEFAULT_NAC_PRECOMPILE
+      : firstNonEmpty(env.VITE_TESTNET_CRAC_PRECOMPILE, env.VITE_CRAC_PRECOMPILE) ?? DEFAULT_NAC_PRECOMPILE;
 
   if (stack === "previewnet") {
     return {
       usdc: firstNonEmpty(env.VITE_PREVIEWNET_USDC_ADDRESS) ?? HARDCODED_PREVIEWNET.usdc,
       pot: firstNonEmpty(env.VITE_PREVIEWNET_POT_ADDRESS) ?? HARDCODED_PREVIEWNET.pot,
       game: firstNonEmpty(env.VITE_PREVIEWNET_GAME_CONTRACT) ?? HARDCODED_PREVIEWNET.game,
-      crac,
+      nac,
     };
   }
 
@@ -50,6 +50,6 @@ export function resolveFrontendContracts(
     usdc: firstNonEmpty(env.VITE_TESTNET_USDC_ADDRESS, env.VITE_USDC_ADDRESS) ?? HARDCODED_TESTNET.usdc,
     pot: firstNonEmpty(env.VITE_TESTNET_POT_ADDRESS, env.VITE_POT_ADDRESS) ?? HARDCODED_TESTNET.pot,
     game: firstNonEmpty(env.VITE_TESTNET_GAME_CONTRACT, env.VITE_GAME_CONTRACT) ?? HARDCODED_TESTNET.game,
-    crac,
+    nac,
   };
 }

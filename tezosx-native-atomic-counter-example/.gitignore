@@ -1,0 +1,12 @@
+# Frontend (Vite)
+frontend/dist/
+frontend/node_modules/
+
+# If Hardhat is run locally under contracts/ again
+contracts/cache/
+contracts/artifacts/
+contracts/node_modules/
+
+frontend/.env
+
+.DS_Store

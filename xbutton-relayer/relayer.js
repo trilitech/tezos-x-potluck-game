@@ -19,10 +19,24 @@ const tezosXPresets = {
   testnet: {
     evmRpc: 'https://demo.txpark.nomadic-labs.com/rpc',
     tezlinkRpc: 'https://demo.txpark.nomadic-labs.com/rpc/tezlink',
+    /** Decimal EVM chain id — checked against `eth_chainId` at startup. */
+    chainIdDec: 127124,
+    eip155Caip2: 'eip155:127124',
+    tezosMichelsonChainId: null,
+    evmExplorerUrl: 'https://demo-blockscout.txpark.nomadic-labs.com',
+    tzktUrl: 'https://demo.txpark.nomadic-labs.com/tzkt',
+    faucetUrl: 'https://demo-faucet.txpark.nomadic-labs.com/',
   },
+  /** Public Previewnet stack (Nomadic): https://evm… + Michelson RPC + explorers. */
   previewnet: {
     evmRpc: 'https://evm.previewnet.tezosx.nomadic-labs.com',
     tezlinkRpc: 'https://michelson.previewnet.tezosx.nomadic-labs.com',
+    chainIdDec: 128064,
+    eip155Caip2: 'eip155:128064',
+    tezosMichelsonChainId: 'NetXY2oPPzkxUW1',
+    evmExplorerUrl: 'https://blockscout.previewnet.tezosx.nomadic-labs.com',
+    tzktUrl: 'https://tzkt.previewnet.tezosx.nomadic-labs.com',
+    faucetUrl: 'https://faucet.previewnet.tezosx.nomadic-labs.com',
   },
 };
 const tezosXPreset = tezosXPresets[tezosXStack];
@@ -78,6 +92,13 @@ if (!EVM_RPC || !RELAYER_PRIVATE_KEY || !TEZLINK_RPC) {
 }
 
 console.log('[relayer] TEZOSX_NETWORK=%s EVM_RPC=%s TEZLINK_RPC=%s', tezosXStack, EVM_RPC, TEZLINK_RPC);
+if (tezosXPreset.tezosMichelsonChainId) {
+  console.log(
+    '[relayer] Michelson chain id: %s (CAIP-2 EVM: %s)',
+    tezosXPreset.tezosMichelsonChainId,
+    tezosXPreset.eip155Caip2,
+  );
+}
 
 const tezlinkStorageUrl = `${TEZLINK_RPC}/chains/main/blocks/head/context/contracts/${GAME_KT1}/storage`;
 
@@ -856,6 +877,16 @@ async function pollDeposits() {
 }
 
 async function main() {
+  const expectedChain = tezosXPreset.chainIdDec;
+  if (expectedChain != null) {
+    const net = await provider.getNetwork();
+    if (net.chainId !== BigInt(expectedChain)) {
+      throw new Error(
+        `[relayer] EVM chainId mismatch for ${tezosXStack}: RPC reports ${net.chainId} but preset expects ${expectedChain} (${tezosXPreset.eip155Caip2})`,
+      );
+    }
+  }
+
   processedDeposits = await loadProcessedDeposits();
 
   console.log('[relayer] started', {
@@ -863,6 +894,10 @@ async function main() {
     pot: POT_ADDRESS,
     game: GAME_KT1,
     tezlinkStorage: tezlinkStorageUrl,
+    evmChainId: expectedChain,
+    evmExplorer: tezosXPreset.evmExplorerUrl,
+    tzkt: tezosXPreset.tzktUrl,
+    faucet: tezosXPreset.faucetUrl,
     verbosePoll: VERBOSE_POLL,
     processedDepositDedupKeys: processedDeposits.size,
     processedDepositsFile: PROCESSED_DEPOSITS_PATH,

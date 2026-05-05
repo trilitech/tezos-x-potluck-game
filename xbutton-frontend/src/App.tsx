@@ -93,7 +93,7 @@ const chainId = BigInt(
     ? tezosXPreset.chainId
     : import.meta.env.VITE_CHAIN_ID?.trim() || tezosXPreset.chainId,
 );
-const { usdc: usdcAddress, pot: potAddress, game: gameContract, crac: cracPrecompile } =
+const { usdc: usdcAddress, pot: potAddress, game: gameContract, nac: nacPrecompile } =
   resolveFrontendContracts(tezosXStack, import.meta.env);
 const usdcDecimals = Number(import.meta.env.VITE_USDC_DECIMALS ?? "6");
 const pressAmount = import.meta.env.VITE_PRESS_AMOUNT ?? "1";
@@ -151,7 +151,7 @@ const CONFIG = {
   potAddress,
   gameContract,
   tezktGameOperationsPath,
-  cracPrecompile,
+  nacPrecompile,
   usdcDecimals,
   pressAmount,
   pollIntervalMs,
@@ -161,8 +161,9 @@ const CONFIG = {
 const TEZOSX_EVM_DISPLAY_NAME = evmNetworkDisplayName(CONFIG.stack);
 
 const TEZOS_X_DASHBOARD_URL = tezosXPreset.dashboardUrl;
-const POTZ_DOCS_URL = import.meta.env.VITE_DOCS_URL ?? "https://tezos.com/tezos-x/";
-const TEZLINK_SITE_URL = import.meta.env.VITE_TEZLINK_SITE_URL ?? "https://tezlink.tezos.com/";
+const POTZ_DOCS_URL = import.meta.env.VITE_DOCS_URL ?? "https://x.tezos.com/docs/";
+/** Michelson-interface footer link: default to the same Tezos X hub as “Explore Tezos X” (per network preset). */
+const TEZLINK_SITE_URL = import.meta.env.VITE_TEZLINK_SITE_URL ?? tezosXPreset.dashboardUrl;
 
 function evmTxUrl(hash: string) {
   const h = hash.startsWith("0x") ? hash : `0x${hash}`;
@@ -2297,7 +2298,7 @@ function App() {
 
       const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
-      const gateway = new ethers.Contract(CONFIG.cracPrecompile, GATEWAY_ABI, signer);
+      const gateway = new ethers.Contract(CONFIG.nacPrecompile, GATEWAY_ABI, signer);
 
       claimAttemptTargetRef.current = claimTarget;
       const tx = await gateway.callMichelson(
@@ -2504,7 +2505,7 @@ function App() {
       });
       const sessionProvider = new ethers.BrowserProvider(ethereum);
       const signer = await sessionProvider.getSigner();
-      const gateway = new ethers.Contract(CONFIG.cracPrecompile, GATEWAY_ABI, signer);
+      const gateway = new ethers.Contract(CONFIG.nacPrecompile, GATEWAY_ABI, signer);
       const durationBytes = encodeMichelineInt(DEFAULT_SESSION_DURATION_SEC);
       const tx = await gateway.callMichelson(
         CONFIG.gameContract,
