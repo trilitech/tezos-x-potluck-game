@@ -7,6 +7,20 @@ export type WalletState = {
   xtzBalanceRaw: bigint | null;
 };
 
+/** Successful POST /api/airdrop JSON (used for accurate event-log copy vs client assumptions). */
+export type AirdropApiSuccess = {
+  ok?: boolean;
+  transfers?: Array<{ asset: string; amount: string; symbol: string }>;
+  message?: string;
+};
+
+export function formatAirdropSuccessLog(parsed: AirdropApiSuccess, networkLabel: string): string | null {
+  const transfers = parsed.transfers;
+  if (!transfers?.length) return null;
+  const parts = transfers.map((r) => `${r.amount} ${r.symbol}`);
+  return `${networkLabel} airdrop complete: ${parts.join(" and ")} sent to your wallet.`;
+}
+
 type PlayFundsConfig = {
   chainId: bigint;
   pressAmount: string;
@@ -109,7 +123,7 @@ export function createWalletFundingHelpers(config: PlayFundsConfig) {
   async function requestAirdrop(
     address: string,
     opts: { usdc: boolean; xtz: boolean },
-  ): Promise<void> {
+  ): Promise<AirdropApiSuccess> {
     if (!config.airdropApiUrl) {
       throw new Error("AIRDROP_NOT_CONFIGURED");
     }
@@ -137,6 +151,8 @@ export function createWalletFundingHelpers(config: PlayFundsConfig) {
       }
       throw new Error(detail.trim() ? `AIRDROP_FAILED:${detail.trim()}` : `AIRDROP_FAILED:${response.status}`);
     }
+
+    return (await response.json()) as AirdropApiSuccess;
   }
 
   async function refreshWalletUntilPlayBalancesVisible(

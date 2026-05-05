@@ -283,7 +283,7 @@ export function PotFooter(props: {
       </div>
       <div className="foot-right">
         <a href={tezlinkUrl} target="_blank" rel="noopener noreferrer">
-          Michelson-interface
+          Michelson explorer
         </a>
         <a href={docsUrl} target="_blank" rel="noopener noreferrer">
           Docs

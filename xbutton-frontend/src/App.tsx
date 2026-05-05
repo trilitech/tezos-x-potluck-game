@@ -108,6 +108,8 @@ const faucetUrl =
     : import.meta.env.VITE_FAUCET_URL?.trim() || tezosXPreset.faucetUrl;
 const DEFAULT_AIRDROP_API_URL = "https://tezosx-evm-usdc-airdrop.vercel.app/api/airdrop";
 const airdropApiUrl = import.meta.env.VITE_AIRDROP_API_URL?.trim() || DEFAULT_AIRDROP_API_URL;
+const DEFAULT_RELAYER_WAKE_URL = "https://tzbutton-crac-game-demo.onrender.com";
+const relayerWakeUrl = import.meta.env.VITE_RELAYER_WAKE_URL?.trim() || DEFAULT_RELAYER_WAKE_URL;
 
 function formatPotPayoutSuccessMessage(sessionId: string, potDisplay: string | null | undefined): string {
   const head = `Game #${sessionId}: Payout confirmed.`;
@@ -814,6 +816,19 @@ async function fetchPayoutTxHash(
 
 async function sleep(ms: number) {
   await new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function wakeRelayerService(): Promise<void> {
+  if (!relayerWakeUrl) return;
+  try {
+    await fetch(relayerWakeUrl, {
+      method: "GET",
+      mode: "no-cors",
+      cache: "no-store",
+    });
+  } catch {
+    /* ignore */
+  }
 }
 
 function collectErrorText(error: unknown): string {
@@ -1916,6 +1931,7 @@ function App() {
   ) {
     const deadline = Date.now() + CONFIG.gameStateWaitTimeoutMs;
     const t0 = Date.now();
+    let relayerWakeTriggered = false;
 
     const updateGameSyncProgress = () => {
       const elapsed = Math.floor((Date.now() - t0) / 1000);
@@ -1937,6 +1953,15 @@ function App() {
       const sleepMs = Math.min(CONFIG.pollIntervalMs, deadline - now);
       await sleep(sleepMs);
       updateGameSyncProgress();
+      const elapsedMs = Date.now() - t0;
+      if (!relayerWakeTriggered && elapsedMs >= 8_000) {
+        relayerWakeTriggered = true;
+        pushEventLog(
+          "This is taking longer than usual. Waking up the sync service now…",
+          "info",
+        );
+        void wakeRelayerService();
+      }
       let nextState: GameState;
       try {
         nextState = await fetchGameState();
