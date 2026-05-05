@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
+import { Fragment, useId, useLayoutEffect, useRef, type ReactNode } from "react";
 
 export function shortAddr(addr: string | null): string {
   if (!addr || addr.length < 12) return "—";
@@ -49,12 +49,14 @@ export function NacCounterBrandIcon() {
 }
 
 export type EventLogTone = "info" | "success" | "error";
+export type EventLogPhraseLink = { phrase: string; href: string };
 export type EventLogEntry = {
   id: string;
   msg: string;
   tone: EventLogTone;
   txHash?: string;
   tezosOpsUrl?: string;
+  phraseLinks?: EventLogPhraseLink[];
 };
 
 export function createEventLogEntryId(): string {
@@ -73,6 +75,41 @@ const TX_LINK_PHRASES = [
 ] as const;
 
 const TEZOS_EXPLORER_PHRASES = ["Michelson-interface storage", "Michelson storage"] as const;
+
+function splitByPhraseLinks(
+  msg: string,
+  links: EventLogPhraseLink[],
+): Array<{ kind: "text"; text: string } | { kind: "link"; text: string; href: string }> {
+  if (!links.length) return [{ kind: "text", text: msg }];
+  const sorted = [...links].sort((a, b) => b.phrase.length - a.phrase.length);
+  const out: Array<{ kind: "text"; text: string } | { kind: "link"; text: string; href: string }> = [];
+  let rest = msg;
+  while (rest.length) {
+    let bestIdx = -1;
+    let bestMatch: EventLogPhraseLink | null = null;
+    for (const l of sorted) {
+      const idx = rest.toLowerCase().indexOf(l.phrase.toLowerCase());
+      if (idx < 0) continue;
+      const better =
+        bestIdx < 0 ||
+        idx < bestIdx ||
+        (idx === bestIdx && l.phrase.length > (bestMatch?.phrase.length ?? 0));
+      if (better) {
+        bestIdx = idx;
+        bestMatch = l;
+      }
+    }
+    if (bestIdx < 0 || !bestMatch) {
+      out.push({ kind: "text", text: rest });
+      break;
+    }
+    if (bestIdx > 0) out.push({ kind: "text", text: rest.slice(0, bestIdx) });
+    const plen = bestMatch.phrase.length;
+    out.push({ kind: "link", text: rest.slice(bestIdx, bestIdx + plen), href: bestMatch.href });
+    rest = rest.slice(bestIdx + plen);
+  }
+  return out;
+}
 
 function messageWithExplorerTxInner(
   msg: string,
@@ -111,7 +148,7 @@ function messageWithExplorerTxInner(
   );
 }
 
-export function messageWithExplorerTx(
+function messageWithExplorerTxFragment(
   msg: string,
   txHash: string | undefined,
   evmTxUrl: (hash: string) => string,
@@ -136,6 +173,41 @@ export function messageWithExplorerTx(
     }
   }
   return messageWithExplorerTxInner(msg, txHash, evmTxUrl);
+}
+
+export function messageWithExplorerTx(
+  msg: string,
+  txHash: string | undefined,
+  evmTxUrl: (hash: string) => string,
+  tezosExplorerUrl?: string,
+  phraseLinks?: EventLogPhraseLink[],
+): ReactNode {
+  if (phraseLinks?.length) {
+    const segments = splitByPhraseLinks(msg, phraseLinks);
+    return (
+      <>
+        {segments.map((seg, i) =>
+          seg.kind === "link" ? (
+            <a
+              key={`pl-${i}-${seg.href}`}
+              href={seg.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="explorer-link"
+            >
+              {seg.text}
+              {" ↗"}
+            </a>
+          ) : (
+            <Fragment key={`pt-${i}`}>
+              {messageWithExplorerTxFragment(seg.text, txHash, evmTxUrl, tezosExplorerUrl)}
+            </Fragment>
+          ),
+        )}
+      </>
+    );
+  }
+  return messageWithExplorerTxFragment(msg, txHash, evmTxUrl, tezosExplorerUrl);
 }
 
 type RoundActionState = "connect" | "wrong-net" | "idle" | "play" | "depositing";
@@ -269,7 +341,9 @@ export function EventLogStrip(props: { entries: EventLogEntry[]; evmTxUrl: (hash
           return (
             <div key={e.id} className={`el-line ${cls} el-${e.tone}`}>
               <span className="el-tag">[EVENT LOG]</span>
-              <span className="el-msg">{messageWithExplorerTx(e.msg, e.txHash, props.evmTxUrl, e.tezosOpsUrl)}</span>
+              <span className="el-msg">
+                {messageWithExplorerTx(e.msg, e.txHash, props.evmTxUrl, e.tezosOpsUrl, e.phraseLinks)}
+              </span>
             </div>
           );
         })

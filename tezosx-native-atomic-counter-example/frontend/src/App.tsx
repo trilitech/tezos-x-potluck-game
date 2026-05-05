@@ -13,6 +13,7 @@ import {
   createEventLogEntryId,
   shortAddr,
   type EventLogEntry,
+  type EventLogPhraseLink,
   type EventLogTone,
 } from "./nacCounterUi";
 import { evmNetworkDisplayName } from "./tezosxNetwork";
@@ -84,6 +85,8 @@ const TEZLINK_STORAGE_URL = COUNTER_KT1
 const POLL_INTERVAL_MS = Number(import.meta.env.VITE_POLL_INTERVAL_MS ?? "5000");
 const WRAPPER_ADDRESS = import.meta.env.VITE_COUNTER_WRAPPER_ADDRESS?.trim() || "";
 const TEZOS_X_DASHBOARD_URL = tezosXPreset.dashboardUrl;
+const TEZOS_X_EXPLORE_URL =
+  import.meta.env.VITE_TEZOS_X_EXPLORE_URL?.trim() || "https://tezos.com/tezos-x/";
 const FAUCET_URL =
   tezosXStack === "previewnet"
     ? tezosXPreset.faucetUrl
@@ -185,6 +188,11 @@ function NetworkInfoModal(props: { open: boolean; onClose: () => void }) {
 function evmTxUrl(hash: string) {
   const normalized = hash.startsWith("0x") ? hash : `0x${hash}`;
   return `${evmExplorerUrl}/tx/${normalized}`;
+}
+
+function evmContractExplorerUrl(contractAddress: string) {
+  const a = contractAddress.startsWith("0x") ? contractAddress : `0x${contractAddress}`;
+  return `${evmExplorerUrl.replace(/\/$/, "")}/address/${a}`;
 }
 
 function counterExplorerUrl() {
@@ -360,7 +368,13 @@ function App() {
   const wrapperMismatchWarnedRef = useRef(false);
   const hasInjectedWallet = typeof window !== "undefined" && Boolean(window.ethereum);
 
-  function pushEventLog(msg: string, tone: EventLogTone, txHash?: string, tezosOpsUrl?: string) {
+  function pushEventLog(
+    msg: string,
+    tone: EventLogTone,
+    txHash?: string,
+    tezosOpsUrl?: string,
+    phraseLinks?: EventLogPhraseLink[],
+  ) {
     setEventLog((prev) => [
       ...prev,
       {
@@ -369,6 +383,7 @@ function App() {
         tone,
         txHash,
         tezosOpsUrl,
+        phraseLinks,
       },
     ]);
   }
@@ -536,10 +551,13 @@ function App() {
       await provider.send("eth_requestAccounts", []);
       await switchToTezosXNetwork(detail.provider);
       await refreshWalletState();
-      pushEventLog(
-        `Wallet connected. You can send NAC counter updates on ${TEZOSX_EVM_DISPLAY_NAME}.`,
-        "success",
-      );
+      const connectMsg =
+        "Wallet connected. Click the main button to update Michelson-interface storage via a Solidity contract on the EVM interface using NAC (Native Atomic Composability) on Tezos X.";
+      const phraseLinks: EventLogPhraseLink[] | undefined =
+        WRAPPER_ADDRESS.length > 0
+          ? [{ phrase: "Solidity contract", href: evmContractExplorerUrl(WRAPPER_ADDRESS) }]
+          : undefined;
+      pushEventLog(connectMsg, "success", undefined, undefined, phraseLinks);
     } catch (error) {
       clearSavedWalletRdns();
       setSelectedEvmProvider(null);
@@ -733,7 +751,7 @@ function App() {
                 ) : null}
               </div>
             ) : null}
-            <a className="btn ghost sm" href={TEZOS_X_DASHBOARD_URL} target="_blank" rel="noopener noreferrer">
+            <a className="btn ghost sm" href={TEZOS_X_EXPLORE_URL} target="_blank" rel="noopener noreferrer">
               Explore Tezos X ↗
             </a>
           </div>
