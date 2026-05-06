@@ -25,6 +25,7 @@ const tezosXPresets = {
     tezosMichelsonChainId: null,
     evmExplorerUrl: 'https://demo-blockscout.txpark.nomadic-labs.com',
     tzktUrl: 'https://demo.txpark.nomadic-labs.com/tzkt',
+    tzktApiUrl: null,
     faucetUrl: 'https://demo-faucet.txpark.nomadic-labs.com/',
   },
   /** Public Previewnet stack (Nomadic): https://evm… + Michelson RPC + explorers. */
@@ -35,7 +36,10 @@ const tezosXPresets = {
     eip155Caip2: 'eip155:128064',
     tezosMichelsonChainId: 'NetXY2oPPzkxUW1',
     evmExplorerUrl: 'https://blockscout.previewnet.tezosx.nomadic-labs.com',
-    tzktUrl: 'https://tzkt.previewnet.tezosx.nomadic-labs.com',
+    /** Michelson explorer (human). */
+    tzktUrl: 'https://previewnet.tezosx.tzkt.io',
+    /** TzKT REST API — game storage is read from here on Previewnet (Michelson `.../storage` often 404s). */
+    tzktApiUrl: 'https://api.previewnet.tezosx.tzkt.io',
     faucetUrl: 'https://faucet.previewnet.tezosx.nomadic-labs.com',
   },
 };
@@ -85,6 +89,12 @@ const CRAC_PRECOMPILE =
     ? firstNonEmpty(process.env.PREVIEWNET_CRAC_PRECOMPILE, process.env.CRAC_PRECOMPILE) ?? DEFAULT_CRAC
     : firstNonEmpty(process.env.TESTNET_CRAC_PRECOMPILE, process.env.CRAC_PRECOMPILE) ?? DEFAULT_CRAC;
 
+/** Previewnet: TzKT `/v1/contracts/.../storage`; testnet: Michelson RPC `.../storage`. */
+const TZKT_API_URL =
+  tezosXStack === 'previewnet'
+    ? firstNonEmpty(process.env.PREVIEWNET_TZKT_API_URL) ?? tezosXPreset.tzktApiUrl
+    : null;
+
 if (!EVM_RPC || !RELAYER_PRIVATE_KEY || !TEZLINK_RPC) {
   throw new Error(
     'Missing required env vars (RELAYER_PRIVATE_KEY, and either TEZOSX_NETWORK or EVM_RPC + TEZLINK_RPC)',
@@ -101,6 +111,9 @@ if (tezosXPreset.tezosMichelsonChainId) {
 }
 
 const tezlinkStorageUrl = `${TEZLINK_RPC}/chains/main/blocks/head/context/contracts/${GAME_KT1}/storage`;
+const gameStorageFetchUrl = TZKT_API_URL
+  ? `${String(TZKT_API_URL).replace(/\/$/, '')}/v1/contracts/${GAME_KT1}/storage`
+  : tezlinkStorageUrl;
 
 const provider = new ethers.JsonRpcProvider(EVM_RPC);
 const wallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, provider);
@@ -178,9 +191,9 @@ async function markDepositProcessed(key) {
 }
 
 async function fetchStorage() {
-  const response = await fetch(tezlinkStorageUrl);
+  const response = await fetch(gameStorageFetchUrl);
   if (!response.ok) {
-    throw new Error(`Tezlink storage fetch failed: ${response.status}`);
+    throw new Error(`Game storage fetch failed: ${response.status} (${gameStorageFetchUrl})`);
   }
   return response.json();
 }
@@ -222,6 +235,74 @@ function nextPendingClaimableSessionId(parsed) {
     if (pendingSessions.get(id)?.claimRequested) return id;
   }
   return null;
+}
+
+function parseStorageTzkt(raw) {
+  if (!raw || typeof raw !== 'object' || raw.current_session_id == null || !raw.current_session) {
+    return null;
+  }
+  const cs = raw.current_session;
+  const currentSessionId = String(raw.current_session_id);
+  const currentPot = cs.pot != null ? String(cs.pot) : null;
+  const currentSessionEnd =
+    typeof cs.session_end === 'string' ? String(Math.floor(Date.parse(cs.session_end) / 1000)) : null;
+  const currentClaimRequested = Boolean(cs.claim_requested);
+  const currentLastPlayerTezos =
+    typeof cs.last_player_tezos === 'string' ? cs.last_player_tezos : null;
+  let currentLastPlayerEvm = null;
+  if (typeof cs.last_player_evm === 'string' && cs.last_player_evm.length > 0) {
+    const h = cs.last_player_evm.replace(/^0x/i, '');
+    if (h.length === 40) currentLastPlayerEvm = '0x' + h;
+  }
+
+  const pendingSessionIds = Array.isArray(raw.pending_session_ids)
+    ? raw.pending_session_ids.map((x) => String(x))
+    : [];
+  const pendingSessionsRaw = raw.pending_sessions;
+  const pendingSessions = new Map();
+  if (pendingSessionsRaw && typeof pendingSessionsRaw === 'object' && !Array.isArray(pendingSessionsRaw)) {
+    for (const [sid, pv] of Object.entries(pendingSessionsRaw)) {
+      if (!pv || typeof pv !== 'object') continue;
+      const pot = pv.pot != null ? String(pv.pot) : null;
+      const sessionEnd =
+        typeof pv.session_end === 'string'
+          ? String(Math.floor(Date.parse(pv.session_end) / 1000))
+          : null;
+      const winnerTezos = typeof pv.winner_tezos === 'string' ? pv.winner_tezos : null;
+      let winnerEvm = null;
+      if (typeof pv.winner_evm === 'string' && pv.winner_evm.length > 0) {
+        const h = pv.winner_evm.replace(/^0x/i, '');
+        if (h.length === 40) winnerEvm = '0x' + h;
+      }
+      const claimRequested = Boolean(pv.claim_requested);
+      pendingSessions.set(String(sid), {
+        winnerTezos,
+        winnerEvm,
+        pot,
+        sessionEnd,
+        claimRequested,
+      });
+    }
+  }
+
+  return {
+    currentSessionId,
+    currentSession: {
+      lastPlayerTezos: currentLastPlayerTezos,
+      lastPlayerEvm: currentLastPlayerEvm,
+      pot: currentPot,
+      sessionEnd: currentSessionEnd,
+      claimRequested: currentClaimRequested,
+    },
+    pendingSessionIds,
+    pendingSessions,
+  };
+}
+
+function parseStorageUnified(storage) {
+  const fromTzkt = parseStorageTzkt(storage);
+  if (fromTzkt) return fromTzkt;
+  return parseStorage(storage);
 }
 
 function parseStorage(storage) {
@@ -384,7 +465,7 @@ async function checkClaimAndPayout() {
   // Claims on the *live* round set claim_requested on current_session only; the session is not in
   // pending_sessions until someone calls start_session. Try this first, but do not return early:
   // a stuck current payout must not starve older pending sessions (same poll drains pending too).
-  const parsed0 = parseStorage(storage);
+  const parsed0 = parseStorageUnified(storage);
   const { currentSessionId, currentSession, pendingSessionIds, pendingSessions } = parsed0;
 
   if (pendingSessionIds.length > 0 && pendingSessions.size === 0) {
@@ -441,7 +522,7 @@ async function checkClaimAndPayout() {
       console.error('Storage fetch error:', err.message);
       return;
     }
-    const parsed = parseStorage(fresh);
+      const parsed = parseStorageUnified(fresh);
     const nextClaimableSessionId = nextPendingClaimableSessionId(parsed);
 
     if (nextClaimableSessionId == null) return;
@@ -791,7 +872,7 @@ async function processDeposited(log) {
 
   try {
     const storage = await fetchStorage();
-    const { currentSessionId } = parseStorage(storage);
+    const { currentSessionId } = parseStorageUnified(storage);
     if (currentSessionId == null) {
       throw new Error('Could not read current_session_id from Tezlink storage');
     }
@@ -893,10 +974,12 @@ async function main() {
     wallet: wallet.address,
     pot: POT_ADDRESS,
     game: GAME_KT1,
-    tezlinkStorage: tezlinkStorageUrl,
+    michelsonStorageUrl: tezlinkStorageUrl,
+    storageFetchUrl: gameStorageFetchUrl,
     evmChainId: expectedChain,
     evmExplorer: tezosXPreset.evmExplorerUrl,
     tzkt: tezosXPreset.tzktUrl,
+    tzktApi: TZKT_API_URL,
     faucet: tezosXPreset.faucetUrl,
     verbosePoll: VERBOSE_POLL,
     processedDepositDedupKeys: processedDeposits.size,

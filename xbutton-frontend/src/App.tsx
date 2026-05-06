@@ -138,12 +138,17 @@ const tezktGameOperationsPath =
     ? gameContract
     : import.meta.env.VITE_TEZKT_GAME_OPERATIONS_PATH?.trim() || gameContract;
 
+const gameStorageUrl =
+  tezosXStack === "previewnet"
+    ? `${tzktApiUrl.replace(/\/$/, "")}/v1/contracts/${encodeURIComponent(gameContract)}/storage`
+    : `${tezlinkRpc}/chains/main/blocks/head/context/contracts/${gameContract}/storage`;
+
 const CONFIG = {
   appName: "Potluck",
   stack: tezosXStack,
   evmRpc,
   tezlinkRpc,
-  tezlinkStorageUrl: `${tezlinkRpc}/chains/main/blocks/head/context/contracts/${gameContract}/storage`,
+  gameStorageUrl,
   evmExplorerUrl,
   tezosExplorerBase,
   tzktApiUrl,
@@ -738,15 +743,94 @@ function parseGameStorage(storage: GameStorageJsonNode): {
   };
 }
 
+/** TzKT `/v1/contracts/.../storage` decoded shape (Previewnet). */
+function parseGameStorageFromTzkt(raw: Record<string, unknown>): ReturnType<typeof parseGameStorage> {
+  const cs = raw.current_session as Record<string, unknown> | undefined;
+  const currentSessionIdRaw = raw.current_session_id;
+  if (!cs || currentSessionIdRaw == null) throw new Error("Unexpected TzKT game storage shape.");
 
+  const currentSessionId = String(currentSessionIdRaw);
+  const potRaw = cs.pot != null ? String(cs.pot) : "0";
+  const sessionEndIso = cs.session_end;
+  if (typeof sessionEndIso !== "string") throw new Error("Unexpected TzKT session_end.");
+  const sessionEndMs = Date.parse(sessionEndIso);
+  if (!Number.isFinite(sessionEndMs)) throw new Error("Invalid TzKT session_end.");
+  const sessionEnd = Math.floor(sessionEndMs / 1000);
+  const claimed = Boolean(cs.claim_requested);
 
-/** Fetch game contract storage (Michelson interface). */
+  let lastPlayerTezos: string | null =
+    typeof cs.last_player_tezos === "string" ? cs.last_player_tezos : null;
+  const lastPlayerBytes: string | null = null;
+  let lastPlayerEvmHex: string | null = null;
+  if (typeof cs.last_player_evm === "string" && cs.last_player_evm.length > 0) {
+    lastPlayerEvmHex = cs.last_player_evm.replace(/^0x/i, "");
+  }
+
+  const pendingIds = Array.isArray(raw.pending_session_ids)
+    ? raw.pending_session_ids.map((x) => String(x))
+    : [];
+  const pendingMap = raw.pending_sessions as Record<string, Record<string, unknown>> | undefined;
+
+  const pendingSessions = pendingIds.flatMap((sessionId) => {
+    const pv = pendingMap?.[sessionId];
+    if (!pv) return [];
+    const pendingPotRaw = pv.pot != null ? String(pv.pot) : null;
+    const endIso = pv.session_end;
+    if (pendingPotRaw == null || typeof endIso !== "string") return [];
+    const endMs = Date.parse(endIso);
+    if (!Number.isFinite(endMs)) return [];
+    const claimRequested = Boolean(pv.claim_requested);
+    const winnerTezos = typeof pv.winner_tezos === "string" ? pv.winner_tezos : null;
+    const w = typeof pv.winner_evm === "string" ? pv.winner_evm.replace(/^0x/i, "") : "";
+    let winnerAddress: string | null = null;
+    if (w.length === 40) {
+      try {
+        winnerAddress = ethers.getAddress("0x" + w);
+      } catch {
+        winnerAddress = null;
+      }
+    }
+    return [
+      {
+        sessionId,
+        winnerTezos,
+        winnerAddress,
+        potRaw: pendingPotRaw,
+        potDisplay: formatTokenAmount(BigInt(pendingPotRaw), CONFIG.usdcDecimals),
+        sessionEnd: Math.floor(endMs / 1000),
+        claimRequested,
+      },
+    ];
+  });
+
+  return {
+    state: {
+      currentSessionId,
+      potRaw,
+      potDisplay: formatTokenAmount(BigInt(potRaw), CONFIG.usdcDecimals),
+      sessionEnd,
+      claimed,
+      pendingSessions,
+      fetchedAt: Date.now(),
+    },
+    lastPlayerTezos,
+    lastPlayerBytes,
+    lastPlayerEvmHex,
+  };
+}
+
+/** Fetch game contract storage (Michelson JSON on testnet; TzKT API on Previewnet). */
 async function fetchGameState(): Promise<GameState> {
-  const response = await fetch(CONFIG.tezlinkStorageUrl);
+  const response = await fetch(CONFIG.gameStorageUrl);
   if (!response.ok) throw new Error(`Game service returned ${response.status}.`);
 
-  const json = (await response.json()) as GameStorageJsonNode;
-  const { state, lastPlayerTezos: tezosStr, lastPlayerBytes, lastPlayerEvmHex } = parseGameStorage(json);
+  const json = (await response.json()) as GameStorageJsonNode | Record<string, unknown>;
+  const isTzktDecoded =
+    json && typeof json === "object" && "current_session_id" in json && !("prim" in json);
+
+  const { state, lastPlayerTezos: tezosStr, lastPlayerBytes, lastPlayerEvmHex } = isTzktDecoded
+    ? parseGameStorageFromTzkt(json as Record<string, unknown>)
+    : parseGameStorage(json as GameStorageJsonNode);
 
   let lastPlayerTezos = tezosStr;
   if (!lastPlayerTezos && lastPlayerBytes) {

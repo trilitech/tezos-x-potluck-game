@@ -28,7 +28,7 @@ export const TEZOSX_FRONTEND_PRESETS: Record<
     tezlinkRpc: "https://michelson.previewnet.tezosx.nomadic-labs.com",
     chainId: "128064",
     evmExplorerUrl: "https://blockscout.previewnet.tezosx.nomadic-labs.com",
-    tezosExplorerBase: "https://tzkt.previewnet.tezosx.nomadic-labs.com",
+    tezosExplorerBase: "https://previewnet.tezosx.tzkt.io",
     tzktApiUrl: "https://api.previewnet.tezosx.tzkt.io",
     faucetUrl: "https://faucet.previewnet.tezosx.nomadic-labs.com/",
     dashboardUrl: "https://previewnet.tezosx.nomadic-labs.com/",
