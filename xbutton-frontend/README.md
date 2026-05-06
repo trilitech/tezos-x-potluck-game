@@ -27,7 +27,7 @@ Copy `.env.example` to `.env` and adjust as needed. All values use the `VITE_` p
 - `VITE_TESTNET_*` – optional second choice for testnet (after the classic trio)
 - `VITE_CRAC_PRECOMPILE` – optional; defaults to the usual Tezos X NAC precompile
 - `VITE_EVM_RPC` – EVM RPC URL. Previewnet default: `https://evm.previewnet.tezosx.nomadic-labs.com`
-- `VITE_TEZLINK_RPC` – Michelson RPC used to read game storage. Previewnet default: `https://michelson.previewnet.tezosx.nomadic-labs.com`
+- `VITE_TEZLINK_RPC` – Michelson RPC URL (Previewnet default: `https://michelson.previewnet.tezosx.nomadic-labs.com`). On Previewnet, game storage polling uses the TzKT API preset (`VITE_TZKT_API_URL`); on testnet, storage is read from this RPC.
 - `VITE_CHAIN_ID` – Chain ID. Previewnet default in this app is `128064`
 - `VITE_TZKT_API_URL` – Optional TzKT REST base. Previewnet default: `https://api.previewnet.tezosx.tzkt.io`
 - `VITE_USDC_ADDRESS`, `VITE_POT_ADDRESS`, `VITE_GAME_CONTRACT` – used on **testnet** (optional; built-in testnet defaults if unset)

@@ -819,7 +819,7 @@ function parseGameStorageFromTzkt(raw: Record<string, unknown>): ReturnType<type
   };
 }
 
-/** Fetch game contract storage (Michelson JSON on testnet; TzKT API on Previewnet). */
+/** Fetch game contract storage (TzKT API on Previewnet; Michelson RPC on testnet). */
 async function fetchGameState(): Promise<GameState> {
   const response = await fetch(CONFIG.gameStorageUrl);
   if (!response.ok) throw new Error(`Game service returned ${response.status}.`);

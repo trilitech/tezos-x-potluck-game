@@ -25,21 +25,16 @@ The NAC gateway is fixed in Solidity as the Previewnet precompile (`0xfF00000000
 
 The wrapper stores your `KT1` at deploy time. If `VITE_COUNTER_KT1` and the wrapper disagree, calls revert (often empty revert data) and wallets may fail before showing a confirm sheet. Redeploy the wrapper with the right KT1 or fix env.
 
-### Reading counter storage on Previewnet
+### Reading counter storage
 
-The public Previewnet Michelson node often returns **404** for the standard Octez path  
-`/chains/main/blocks/head/context/contracts/<KT1>/storage`, even when the contract exists.  
-The frontend therefore uses the **TzKT REST API** on Previewnet:
+On **Previewnet** the UI loads the counter from the **TzKT REST API**:
 
 `https://api.previewnet.tezosx.tzkt.io/v1/contracts/<KT1>/storage`
 
-On testnet it still uses the Michelson RPC `.../storage` URL (via `VITE_TEZLINK_RPC`).
+On **testnet** it uses the Michelson RPC storage URL from `VITE_TEZLINK_RPC`.
 
-If the UI cannot load the counter value, check `VITE_TEZOSX_NETWORK`, `KT1`, and that the contract is indexed (TzKT).
+If the value does not appear, confirm `VITE_TEZOSX_NETWORK`, the `KT1`, and that the contract is visible to the indexer.
 
 ```bash
-curl -sS -o /dev/null -w "%{http_code}\n" \
-  "https://api.previewnet.tezosx.tzkt.io/v1/contracts/<KT1>/storage"
+curl -sS "https://api.previewnet.tezosx.tzkt.io/v1/contracts/<KT1>/storage"
 ```
-
-`200` = storage available; `404` = wrong `KT1` / network or not indexed yet.

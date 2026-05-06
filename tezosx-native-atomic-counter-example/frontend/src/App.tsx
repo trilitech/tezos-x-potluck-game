@@ -84,7 +84,7 @@ const COUNTER_KT1 = (() => {
   return "";
 })();
 
-/** Previewnet: TzKT `/v1/contracts/.../storage` (Michelson `.../storage` often 404s); testnet: Michelson RPC. */
+/** Previewnet: counter value from TzKT API; testnet: Michelson RPC storage URL. */
 const counterStorageUrl = COUNTER_KT1
   ? tezosXStack === "previewnet"
     ? `${tzktApiUrl.replace(/\/$/, "")}/v1/contracts/${encodeURIComponent(COUNTER_KT1)}/storage`
@@ -312,8 +312,7 @@ async function readCounterState(): Promise<CounterRead> {
   const res = await fetch(counterStorageUrl);
   if (res.status === 404) {
     throw new Error(
-      `Storage request returned 404 for ${COUNTER_KT1}. The contract is missing on this network or the address is wrong. ` +
-        `Confirm VITE_TEZOSX_NETWORK matches where the contract was originated (${tezosXStack}), and verify: ${counterStorageUrl}`,
+      `Could not find counter storage for ${COUNTER_KT1}. Check the contract address and that VITE_TEZOSX_NETWORK matches where the contract was deployed.`,
     );
   }
   if (!res.ok) {
@@ -323,7 +322,7 @@ async function readCounterState(): Promise<CounterRead> {
   const value = parseCounterStorageJson(json);
   if (value == null) {
     throw new Error(
-      "Unexpected counter storage shape. Expected TzKT decoded value (e.g. JSON string nat) or Micheline JSON.",
+      "Unexpected counter storage shape. Expected indexer JSON (e.g. string nat) or Micheline-shaped JSON.",
     );
   }
   return { value };

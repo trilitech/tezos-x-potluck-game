@@ -38,7 +38,7 @@ const tezosXPresets = {
     evmExplorerUrl: 'https://blockscout.previewnet.tezosx.nomadic-labs.com',
     /** Michelson explorer (human). */
     tzktUrl: 'https://previewnet.tezosx.tzkt.io',
-    /** TzKT REST API — game storage is read from here on Previewnet (Michelson `.../storage` often 404s). */
+    /** TzKT REST API — Previewnet game storage reads use this indexer endpoint. */
     tzktApiUrl: 'https://api.previewnet.tezosx.tzkt.io',
     faucetUrl: 'https://faucet.previewnet.tezosx.nomadic-labs.com',
   },
@@ -89,7 +89,7 @@ const CRAC_PRECOMPILE =
     ? firstNonEmpty(process.env.PREVIEWNET_CRAC_PRECOMPILE, process.env.CRAC_PRECOMPILE) ?? DEFAULT_CRAC
     : firstNonEmpty(process.env.TESTNET_CRAC_PRECOMPILE, process.env.CRAC_PRECOMPILE) ?? DEFAULT_CRAC;
 
-/** Previewnet: TzKT `/v1/contracts/.../storage`; testnet: Michelson RPC `.../storage`. */
+/** Previewnet: storage URL from TzKT API; testnet: Michelson RPC storage URL. */
 const TZKT_API_URL =
   tezosXStack === 'previewnet'
     ? firstNonEmpty(process.env.PREVIEWNET_TZKT_API_URL) ?? tezosXPreset.tzktApiUrl
