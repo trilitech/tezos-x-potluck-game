@@ -920,9 +920,24 @@ function collectErrorText(error: unknown): string {
     code?: string;
     message?: string;
     shortMessage?: string;
-    info?: { error?: { message?: string } };
+    reason?: string;
+    info?: { error?: { message?: string; data?: unknown } };
+    data?: unknown;
   };
-  return [e?.code, e?.message, e?.shortMessage, e?.info?.error?.message]
+  let dataStr = "";
+  try {
+    if (e?.data != null) dataStr = String(JSON.stringify(e.data)).toLowerCase();
+  } catch {
+    /* ignore */
+  }
+  return [
+    e?.code,
+    e?.message,
+    e?.shortMessage,
+    e?.reason,
+    e?.info?.error?.message,
+    dataStr,
+  ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
@@ -1015,6 +1030,27 @@ function formatGatewayError(error: unknown, kind: "claim" | "start_session"): st
   }
 
   return (e?.shortMessage ?? e?.message ?? (kind === "claim" ? "Claim failed." : "Start game failed.")).trim();
+}
+
+/** start_session gateway tx: map common Michelson failwith strings before generic gateway text. */
+function formatStartSessionError(error: unknown): string {
+  const parts = collectErrorText(error);
+  if (parts.includes("action_rejected") || parts.includes("user rejected") || parts.includes("user denied")) {
+    return "You cancelled the transaction in your wallet.";
+  }
+  if (parts.includes("insufficient funds")) {
+    return "Not enough coin for gas. Add funds for fees and try again.";
+  }
+  if (parts.includes("session_active")) {
+    return "This round is still active on-chain. Wait until the timer finishes, refresh the page, then tap Play again.";
+  }
+  if (parts.includes("invalid_duration")) {
+    return "The network rejected the session settings. Refresh and try again.";
+  }
+  if (parts.includes("inconsistent_current_session")) {
+    return "Game state could not be updated. Refresh the page and try again.";
+  }
+  return formatGatewayError(error, "start_session");
 }
 
 function PotzLuckMark() {
@@ -2608,6 +2644,26 @@ function App() {
         message: "Confirm the new game in your wallet to start a round on the Michelson-interface.",
         steps: markFlowSteps(START_SESSION_STEP_DEFS, "wallet_start"),
       });
+      let preRound: GameState;
+      try {
+        preRound = await fetchGameState();
+      } catch {
+        setActionState({
+          kind: "error",
+          message:
+            "Could not load the latest game state before starting. Check your connection, refresh the page, and try again.",
+        });
+        return false;
+      }
+      const nowSecPreflight = Math.floor(Date.now() / 1000);
+      if (preRound.sessionEnd > nowSecPreflight) {
+        setActionState({
+          kind: "error",
+          message:
+            "This round has not finished on-chain yet. Wait for the timer, refresh, then tap Play again.",
+        });
+        return false;
+      }
       const sessionProvider = new ethers.BrowserProvider(ethereum);
       const signer = await sessionProvider.getSigner();
       const gateway = new ethers.Contract(CONFIG.nacPrecompile, GATEWAY_ABI, signer);
@@ -2644,16 +2700,9 @@ function App() {
       }
       return true;
     } catch (error) {
-      const err = error as { code?: string; message?: string; shortMessage?: string };
-      const isRevert =
-        err?.code === "CALL_EXCEPTION" ||
-        err?.message?.toLowerCase().includes("reverted") ||
-        err?.shortMessage?.toLowerCase().includes("reverted");
       setActionState({
         kind: "error",
-        message: isRevert
-          ? `Could not start a new game. Refresh, check you are on ${TEZOSX_EVM_DISPLAY_NAME}, and try again.`
-          : formatGatewayError(error, "start_session"),
+        message: formatStartSessionError(error),
       });
       return false;
     } finally {
