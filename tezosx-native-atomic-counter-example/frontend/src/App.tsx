@@ -84,8 +84,11 @@ const COUNTER_KT1 = (() => {
   return "";
 })();
 
-const TEZLINK_STORAGE_URL = COUNTER_KT1
-  ? `${tezlinkRpc}/chains/main/blocks/head/context/contracts/${COUNTER_KT1}/storage`
+/** Previewnet: TzKT `/v1/contracts/.../storage` (Michelson `.../storage` often 404s); testnet: Michelson RPC. */
+const counterStorageUrl = COUNTER_KT1
+  ? tezosXStack === "previewnet"
+    ? `${tzktApiUrl.replace(/\/$/, "")}/v1/contracts/${encodeURIComponent(COUNTER_KT1)}/storage`
+    : `${tezlinkRpc}/chains/main/blocks/head/context/contracts/${COUNTER_KT1}/storage`
   : "";
 
 const POLL_INTERVAL_MS = Number(import.meta.env.VITE_POLL_INTERVAL_MS ?? "5000");
@@ -287,26 +290,41 @@ function extractFirstInt(node: MichelsonNode | null | undefined): number | null 
   return null;
 }
 
+/** TzKT often returns a bare JSON string for simple `nat` storage, e.g. `"42"`. */
+function parseCounterStorageJson(json: unknown): number | null {
+  if (typeof json === "string" && /^\d+$/.test(json)) {
+    const n = Number(json);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (typeof json === "number" && Number.isFinite(json)) return json;
+  if (json && typeof json === "object" && !Array.isArray(json)) {
+    return extractFirstInt(json as MichelsonNode);
+  }
+  return null;
+}
+
 async function readCounterState(): Promise<CounterRead> {
-  if (!COUNTER_KT1 || !TEZLINK_STORAGE_URL) {
+  if (!COUNTER_KT1 || !counterStorageUrl) {
     throw new Error(
       "No Michelson counter address configured. Set VITE_COUNTER_KT1 (or VITE_PREVIEWNET_COUNTER_KT1 on previewnet) in frontend/.env after originating the SmartPy contract.",
     );
   }
-  const res = await fetch(TEZLINK_STORAGE_URL);
+  const res = await fetch(counterStorageUrl);
   if (res.status === 404) {
     throw new Error(
-      `Michelson RPC returned 404 for ${COUNTER_KT1}. The contract is missing on this network or the address is wrong. ` +
-        `Confirm VITE_TEZOSX_NETWORK matches where the contract was originated (${tezosXStack}), and verify: ${TEZLINK_STORAGE_URL}`,
+      `Storage request returned 404 for ${COUNTER_KT1}. The contract is missing on this network or the address is wrong. ` +
+        `Confirm VITE_TEZOSX_NETWORK matches where the contract was originated (${tezosXStack}), and verify: ${counterStorageUrl}`,
     );
   }
   if (!res.ok) {
-    throw new Error(`Michelson storage request failed with ${res.status}. URL: ${TEZLINK_STORAGE_URL}`);
+    throw new Error(`Counter storage request failed with ${res.status}. URL: ${counterStorageUrl}`);
   }
-  const json = (await res.json()) as MichelsonNode;
-  const value = extractFirstInt(json);
+  const json: unknown = await res.json();
+  const value = parseCounterStorageJson(json);
   if (value == null) {
-    throw new Error("Unexpected counter storage shape returned by Michelson RPC.");
+    throw new Error(
+      "Unexpected counter storage shape. Expected TzKT decoded value (e.g. JSON string nat) or Micheline JSON.",
+    );
   }
   return { value };
 }
