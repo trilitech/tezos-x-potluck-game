@@ -2965,6 +2965,13 @@ function App() {
               </div>
             </div>
             <div className="topbar-right">
+              <button
+                type="button"
+                className="btn ghost sm"
+                onClick={() => setGameContractsOpen(true)}
+              >
+                Game contracts
+              </button>
               <a
                 className="btn ghost sm"
                 href={TEZOS_X_DASHBOARD_URL}
@@ -3001,7 +3008,6 @@ function App() {
             docsUrl={POTZ_DOCS_URL}
             tezlinkUrl={TEZLINK_SITE_URL}
             onOpenNetworkInfo={() => setNetworkInfoOpen(true)}
-            onOpenGameContracts={() => setGameContractsOpen(true)}
           />
         </div>
         <NetworkInfoModal open={networkInfoOpen} onClose={() => setNetworkInfoOpen(false)} />
@@ -3051,6 +3057,13 @@ function App() {
             <div className="topbar-right">
               <button type="button" className="btn ghost sm" onClick={goToGame}>
                 Back to game
+              </button>
+              <button
+                type="button"
+                className="btn ghost sm"
+                onClick={() => setGameContractsOpen(true)}
+              >
+                Game contracts
               </button>
               <a
                 className="btn ghost sm"
@@ -3168,6 +3181,7 @@ function App() {
           </main>
         </div>
         <NetworkInfoModal open={networkInfoOpen} onClose={() => setNetworkInfoOpen(false)} />
+        <GameContractsModal open={gameContractsOpen} onClose={() => setGameContractsOpen(false)} />
         <WalletPickerModal
           open={walletPickerOpen}
           options={connectWalletOptions}
@@ -3239,6 +3253,13 @@ function App() {
                 </button>
               </>
             )}
+            <button
+              type="button"
+              className="btn ghost sm"
+              onClick={() => setGameContractsOpen(true)}
+            >
+              Game contracts
+            </button>
             <a
               className="btn ghost sm"
               href={TEZOS_X_DASHBOARD_URL}
@@ -3392,7 +3413,6 @@ function App() {
           docsUrl={POTZ_DOCS_URL}
           tezlinkUrl={TEZLINK_SITE_URL}
           onOpenNetworkInfo={() => setNetworkInfoOpen(true)}
-          onOpenGameContracts={() => setGameContractsOpen(true)}
         />
       </div>
       <NetworkInfoModal open={networkInfoOpen} onClose={() => setNetworkInfoOpen(false)} />
