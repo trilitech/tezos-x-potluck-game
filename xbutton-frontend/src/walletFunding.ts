@@ -14,10 +14,18 @@ export type AirdropApiSuccess = {
   message?: string;
 };
 
-export function formatAirdropSuccessLog(parsed: AirdropApiSuccess, networkLabel: string): string | null {
+export function formatAirdropSuccessLog(
+  parsed: AirdropApiSuccess,
+  networkLabel: string,
+  configured: { usdcAmount: string; xtzAmount: string },
+): string | null {
   const transfers = parsed.transfers;
   if (!transfers?.length) return null;
-  const parts = transfers.map((r) => `${r.amount} ${r.symbol}`);
+  const parts = transfers.map((r) => {
+    if (r.symbol === "USDC") return `${configured.usdcAmount} USDC`;
+    if (r.symbol === "XTZ") return `${configured.xtzAmount} XTZ`;
+    return `${r.amount} ${r.symbol}`;
+  });
   return `${networkLabel} airdrop complete: ${parts.join(" and ")} sent to your wallet.`;
 }
 
@@ -163,11 +171,11 @@ export function createWalletFundingHelpers(config: PlayFundsConfig) {
     if (!willAirdrop) {
       return w;
     }
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 15; i++) {
       if (!getInsufficientPlayFundsEventLogMessage(w)) {
         return w;
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 400));
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
       w = await refresh();
     }
     return w;

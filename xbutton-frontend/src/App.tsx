@@ -111,6 +111,9 @@ const airdropApiUrl = import.meta.env.VITE_AIRDROP_API_URL?.trim() || DEFAULT_AI
 const DEFAULT_RELAYER_WAKE_URL = "https://tzbutton-crac-game-demo.onrender.com";
 const relayerWakeUrl = import.meta.env.VITE_RELAYER_WAKE_URL?.trim() || DEFAULT_RELAYER_WAKE_URL;
 
+const AIRDROP_BALANCE_SYNC_PENDING_MESSAGE =
+  "Your airdrop was sent, but your wallet balance has not updated yet. Wait a moment, then press Play again.";
+
 function formatPotPayoutSuccessMessage(sessionId: string, potDisplay: string | null | undefined): string {
   const head = `Game #${sessionId}: Payout confirmed.`;
   if (potDisplay != null && potDisplay !== "" && potDisplay !== "—" && potDisplay !== "0") {
@@ -1609,7 +1612,10 @@ function App() {
       }
       await refreshWalletState(false);
       pushEventLog(
-        formatAirdropSuccessLog(result, stackShortLabel(CONFIG.stack)) ??
+        formatAirdropSuccessLog(result, stackShortLabel(CONFIG.stack), {
+          usdcAmount: AIRDROP_USDC_AMOUNT,
+          xtzAmount: AIRDROP_XTZ_AMOUNT,
+        }) ??
           airdropDeliveredLogMessage(needsUsdcAirdrop, needsXtzAirdrop, stackShortLabel(CONFIG.stack)),
         "success",
       );
@@ -1762,10 +1768,16 @@ function App() {
     const funded = await ensureNetworkFundsIfNeeded(connectedWallet);
     const { willAirdrop } = funded;
 
+    if (willAirdrop) {
+      setActionState({
+        kind: "pending",
+        message: "Previewnet airdrop complete. Waiting for your wallet balance to update…",
+      });
+    }
     const wAfterFunds = await refreshWalletUntilPlayBalancesVisible(willAirdrop, () => refreshWalletState(false));
     let insufficientMsg = getInsufficientPlayFundsEventLogMessage(wAfterFunds);
     if (willAirdrop && insufficientMsg) {
-      insufficientMsg = null;
+      insufficientMsg = AIRDROP_BALANCE_SYNC_PENDING_MESSAGE;
     }
 
     const latestGameState = await refreshGameState();
@@ -1898,10 +1910,16 @@ function App() {
       "info",
     );
     const { willAirdrop } = await ensureNetworkFundsIfNeeded(w);
+    if (willAirdrop) {
+      setActionState({
+        kind: "pending",
+        message: "Previewnet airdrop complete. Waiting for your wallet balance to update…",
+      });
+    }
     const wAfterFunds = await refreshWalletUntilPlayBalancesVisible(willAirdrop, () => refreshWalletState(false));
     let insufficientMsg = getInsufficientPlayFundsEventLogMessage(wAfterFunds);
     if (willAirdrop && insufficientMsg) {
-      insufficientMsg = null;
+      insufficientMsg = AIRDROP_BALANCE_SYNC_PENDING_MESSAGE;
     }
 
     const latestGameState = await refreshGameState();
@@ -2171,6 +2189,12 @@ function App() {
             message: `You need ${stackShortLabel(CONFIG.stack)} funds to play — we’re airdropping your wallet now…`,
           });
           const { willAirdrop } = await ensureNetworkFundsIfNeeded(latestWallet);
+          if (willAirdrop) {
+            setActionState({
+              kind: "pending",
+              message: "Previewnet airdrop complete. Waiting for your wallet balance to update…",
+            });
+          }
           const fundedWallet = await refreshWalletUntilPlayBalancesVisible(
             willAirdrop,
             () => refreshWalletState(false),
@@ -2180,7 +2204,9 @@ function App() {
           setActionState({
             kind: stillInsufficient ? "error" : "idle",
             message: stillInsufficient
-              ? stillInsufficient
+              ? willAirdrop
+                ? AIRDROP_BALANCE_SYNC_PENDING_MESSAGE
+                : stillInsufficient
               : `Your wallet is topped up. Press Play again to deposit ${CONFIG.pressAmount} USDC into the pot.`,
           });
         } catch (error) {
