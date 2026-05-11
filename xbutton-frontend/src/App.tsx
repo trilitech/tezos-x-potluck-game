@@ -424,6 +424,59 @@ function NetworkInfoModal(props: { open: boolean; onClose: () => void }) {
   );
 }
 
+function GameContractsModal(props: { open: boolean; onClose: () => void }) {
+  if (!props.open) return null;
+
+  const evmBase = CONFIG.evmExplorerUrl.replace(/\/$/, "");
+  const tezosBase = CONFIG.tezosExplorerBase.replace(/\/$/, "");
+  const rows = [
+    {
+      label: "Pot / Escrow Contract",
+      value: CONFIG.potAddress,
+      href: `${evmBase}/address/${CONFIG.potAddress}`,
+    },
+    {
+      label: "Game Contract",
+      value: CONFIG.gameContract,
+      href: `${tezosBase}/${CONFIG.gameContract}`,
+    },
+    {
+      label: "USDC Contract",
+      value: CONFIG.usdcAddress,
+      href: `${evmBase}/address/${CONFIG.usdcAddress}`,
+    },
+  ] as const;
+
+  return (
+    <div className="tour-backdrop" onClick={props.onClose}>
+      <div className="tour-card sm network-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="tour-head">
+          <div className="tour-step-pill">
+            <b>Game Contracts</b>
+          </div>
+          <button type="button" className="tour-close" onClick={props.onClose} aria-label="Close game contracts">
+            ×
+          </button>
+        </div>
+        <div className="tour-body">
+          <div className="network-info-list">
+            {rows.map((row) => (
+              <div key={row.label} className="network-info-row">
+                <div className="network-info-label">{row.label}</div>
+                <div className="network-info-value">
+                  <a href={row.href} target="_blank" rel="noopener noreferrer" className="explorer-link contract-link">
+                    {row.value}
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AirdropModal(props: {
   open: boolean;
   receivedUsdc: boolean;
@@ -1093,6 +1146,7 @@ function App() {
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
   const walletMenuRef = useRef<HTMLDivElement>(null);
   const [networkInfoOpen, setNetworkInfoOpen] = useState(false);
+  const [gameContractsOpen, setGameContractsOpen] = useState(false);
   const [airdropModalState, setAirdropModalState] = useState<{ open: boolean; usdc: boolean; xtz: boolean }>({
     open: false,
     usdc: false,
@@ -2947,9 +3001,11 @@ function App() {
             docsUrl={POTZ_DOCS_URL}
             tezlinkUrl={TEZLINK_SITE_URL}
             onOpenNetworkInfo={() => setNetworkInfoOpen(true)}
+            onOpenGameContracts={() => setGameContractsOpen(true)}
           />
         </div>
         <NetworkInfoModal open={networkInfoOpen} onClose={() => setNetworkInfoOpen(false)} />
+        <GameContractsModal open={gameContractsOpen} onClose={() => setGameContractsOpen(false)} />
         <PotzTour
           open={tourOpen}
           stepIdx={tourStep}
@@ -3336,9 +3392,11 @@ function App() {
           docsUrl={POTZ_DOCS_URL}
           tezlinkUrl={TEZLINK_SITE_URL}
           onOpenNetworkInfo={() => setNetworkInfoOpen(true)}
+          onOpenGameContracts={() => setGameContractsOpen(true)}
         />
       </div>
       <NetworkInfoModal open={networkInfoOpen} onClose={() => setNetworkInfoOpen(false)} />
+      <GameContractsModal open={gameContractsOpen} onClose={() => setGameContractsOpen(false)} />
       <AirdropModal
         open={airdropModalState.open}
         receivedUsdc={airdropModalState.usdc}

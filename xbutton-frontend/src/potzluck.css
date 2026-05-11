@@ -964,6 +964,10 @@ body {
 .network-modal {
   max-height: min(80vh, 720px);
 }
+.contract-link {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .tour-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 18px;

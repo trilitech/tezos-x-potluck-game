@@ -269,8 +269,9 @@ export function PotFooter(props: {
   docsUrl: string;
   tezlinkUrl: string;
   onOpenNetworkInfo: () => void;
+  onOpenGameContracts: () => void;
 }) {
-  const { faucetUrl, docsUrl, tezlinkUrl, onOpenNetworkInfo } = props;
+  const { faucetUrl, docsUrl, tezlinkUrl, onOpenNetworkInfo, onOpenGameContracts } = props;
   return (
     <footer className="pl-footer">
       <div className="foot-left">
@@ -288,6 +289,9 @@ export function PotFooter(props: {
         <a href={docsUrl} target="_blank" rel="noopener noreferrer">
           Docs
         </a>
+        <button type="button" className="footer-link-btn" onClick={onOpenGameContracts}>
+          Game contracts
+        </button>
         <button type="button" className="footer-link-btn" onClick={onOpenNetworkInfo}>
           Network information
         </button>
