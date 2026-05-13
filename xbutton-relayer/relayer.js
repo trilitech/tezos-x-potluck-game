@@ -48,7 +48,7 @@ const tezosXPreset = tezosXPresets[tezosXStack];
 /** Built-in Previewnet pot/game; optional `PREVIEWNET_*` env overrides. Ignores `POT_ADDRESS` / `GAME_KT1` on previewnet so testnet values can stay in `.env`. */
 const HARDCODED_PREVIEWNET = {
   pot: '0x92E791DF3Dd5A8704f0e7d9B3003A0627d95d017',
-  game: 'KT1Dj2B1Wmz3vqaBzHhEZpjAhXu7CrQBEiy1',
+  game: 'KT1DLAxPDW1mdtFavmja5AhKoLJUqJBuK5CQ',
 };
 
 const HARDCODED_TESTNET = {
@@ -191,11 +191,56 @@ async function markDepositProcessed(key) {
 }
 
 async function fetchStorage() {
-  const response = await fetch(gameStorageFetchUrl);
-  if (!response.ok) {
-    throw new Error(`Game storage fetch failed: ${response.status} (${gameStorageFetchUrl})`);
+  /** TzKT (and some proxies) may return 2xx with an empty body; `response.json()` then throws
+   * `SyntaxError: Unexpected end of JSON input`. Read text, validate, parse explicitly; retry transient outages. */
+  const headers = {
+    Accept: 'application/json',
+    'User-Agent': 'xbutton-relayer (+https://github.com/trilitech/tezos-x-potluck-game)',
+  };
+  const maxAttempts = 4;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await fetch(gameStorageFetchUrl, { headers });
+      if (!response.ok) {
+        const retryHttp = response.status === 429 || response.status === 502 || response.status === 503;
+        if (retryHttp && attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 500 * attempt));
+          continue;
+        }
+        throw new Error(`Game storage fetch failed: ${response.status} (${gameStorageFetchUrl})`);
+      }
+      const text = await response.text();
+      if (!text.trim()) {
+        throw new Error(
+          `Game storage empty body (HTTP ${response.status}). Check KT1 is indexed on TzKT or try again.`,
+        );
+      }
+      try {
+        return JSON.parse(text);
+      } catch (parseErr) {
+        const snippet = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+        throw new Error(`Game storage invalid JSON: ${parseErr.message}. Body starts: ${snippet}`);
+      }
+    } catch (err) {
+      lastErr = err;
+      const msg = err?.message ?? String(err);
+      const isSyntax = err instanceof SyntaxError;
+      const retriable =
+        attempt < maxAttempts &&
+        (isSyntax ||
+          msg.includes('empty body') ||
+          msg.includes('fetch failed') ||
+          msg.includes('ECONNRESET') ||
+          msg.includes('ETIMEDOUT') ||
+          msg.includes('EAI_AGAIN') ||
+          msg.includes('socket hang up') ||
+          msg.includes('network error'));
+      if (!retriable) throw err;
+      await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
   }
-  return response.json();
+  throw lastErr;
 }
 
 /**
